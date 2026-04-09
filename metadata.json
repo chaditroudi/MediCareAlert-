@@ -1,0 +1,8 @@
+{
+  "name": "MedCareAlert+",
+  "description": "An AI-powered platform for medication tracking and pharmacy availability in Tunisia. Features prescription OCR, automated reminders, and geolocation-based pharmacy search.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
