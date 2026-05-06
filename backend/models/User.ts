@@ -6,11 +6,14 @@ const UserSchema = new Schema({
   password: { type: String, required: true },
   role: { type: String, enum: ['PATIENT', 'PHARMACIST', 'ADMIN'], default: 'PATIENT' },
   isActive: { type: Boolean, default: true },
+  profileImageUrl: { type: String, default: null },
   location: {
     lat: Number,
     lng: Number
   },
-  pharmacyId: { type: Schema.Types.ObjectId, ref: 'Pharmacy' }
+  pharmacyId: { type: Schema.Types.ObjectId, ref: 'Pharmacy' },
+  resetPasswordToken: { type: String, default: null },
+  resetPasswordExpires: { type: Date, default: null }
 }, { timestamps: true });
 
 export const UserModel = mongoose.model('User', UserSchema);

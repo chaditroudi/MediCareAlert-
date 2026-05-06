@@ -6,27 +6,62 @@ import Dashboard from './components/Dashboard';
 import PharmacyMap from './components/PharmacyMap';
 import HistoryView from './components/HistoryView';
 import Auth from './components/Auth';
+import { AppFeedbackProvider } from './components/AppFeedbackProvider';
 import NotificationProvider from './components/NotificationProvider';
 import InventoryManager from './components/InventoryManager';
 import AdminPanel from './components/AdminPanel';
 import RequestsManager from './components/RequestsManager';
 import ScheduleView from './components/ScheduleView';
 import ProfileManager from './components/ProfileManager';
+import PharmacyStockCatalog from './components/PharmacyStockCatalog';
+import { API_BASE } from './lib/appConfig';
+import { readApiResponse } from './lib/api';
 
-const API_BASE = 'http://localhost:5000/api';
+type ViewType = 'dashboard' | 'map' | 'profile' | 'history' | 'inventory' | 'admin' | 'requests' | 'schedule' | 'pharmacy-stock';
 
-type ViewType = 'dashboard' | 'map' | 'profile' | 'history' | 'inventory' | 'admin' | 'requests' | 'schedule' |'dashboard';
+const getCurrentTimeLabel = (date: Date): string =>
+  date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+
+const timeToMinutes = (value: string): number => {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+const resolveFallbackDoseTime = (med: Medication, scheduledTime?: string): string => {
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+  const handledTimes = new Set(
+    (med.history || [])
+      .filter((entry) => entry.date === today && entry.status === 'taken')
+      .map((entry) => entry.time)
+  );
+
+  if (scheduledTime && med.schedules?.includes(scheduledTime) && !handledTimes.has(scheduledTime)) {
+    return scheduledTime;
+  }
+
+  const pendingSchedules = (med.schedules || []).filter((time) => !handledTimes.has(time));
+  if (pendingSchedules.length === 0) {
+    return getCurrentTimeLabel(now);
+  }
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return [...pendingSchedules].sort((a, b) => {
+    return Math.abs(timeToMinutes(a) - nowMinutes) - Math.abs(timeToMinutes(b) - nowMinutes);
+  })[0];
+};
 
 /** Role-based access map: which views each role can access */
 const VIEW_PERMISSIONS: Record<ViewType, UserRole[]> = {
-  dashboard: [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
-  schedule:  [UserRole.PATIENT],
-  history:   [UserRole.PATIENT],
-  map:       [UserRole.PATIENT, UserRole.PHARMACIST],
-  inventory: [UserRole.PHARMACIST, UserRole.ADMIN],
-  requests:  [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
-  admin:     [UserRole.ADMIN],
-  profile:   [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
+  dashboard:        [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
+  schedule:         [UserRole.PATIENT],
+  history:          [UserRole.PATIENT],
+  map:              [UserRole.PATIENT, UserRole.PHARMACIST],
+  'pharmacy-stock': [UserRole.PATIENT],
+  inventory:        [UserRole.PHARMACIST, UserRole.ADMIN],
+  requests:         [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
+  admin:            [UserRole.ADMIN],
+  profile:          [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN],
 };
 
 
@@ -61,7 +96,7 @@ const App: React.FC = () => {
         throw new Error(`Server responded with ${res.status}`);
       }
       
-      const data = await res.json();
+      const data = await readApiResponse<any[]>(res);
       const today = new Date().toISOString().split('T')[0];
       const withTakenCount = data.map((m: any) => ({
         ...m,
@@ -96,7 +131,7 @@ const App: React.FC = () => {
           });
           
           if (res.ok) {
-            const userData = await res.json();
+            const userData = await readApiResponse<User>(res);
             setUser(userData);
             setToken(savedToken);
             fetchMedications(savedToken);
@@ -141,64 +176,12 @@ const App: React.FC = () => {
     });
   };
 
-  const handleDownloadLogo = () => {
-    // Create high-res canvas (1024x1024)
-    const canvas = document.createElement('canvas');
-    canvas.width = 1024;
-    canvas.height = 1024;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // 1. Draw Background Gradient
-    const gradient = ctx.createLinearGradient(0, 0, 1024, 1024);
-    gradient.addColorStop(0, '#2563eb'); // blue-600
-    gradient.addColorStop(1, '#4338ca'); // indigo-700
-    
-    // 2. Draw Rounded Square Container
-    const padding = 100;
-    const size = 1024 - (padding * 2);
-    const radius = 220;
-    
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    // Path for rounded rectangle
-    ctx.moveTo(padding + radius, padding);
-    ctx.lineTo(padding + size - radius, padding);
-    ctx.quadraticCurveTo(padding + size, padding, padding + size, padding + radius);
-    ctx.lineTo(padding + size, padding + size - radius);
-    ctx.quadraticCurveTo(padding + size, padding + size, padding + size - radius, padding + size);
-    ctx.lineTo(padding + radius, padding + size);
-    ctx.quadraticCurveTo(padding, padding + size, padding, padding + size - radius);
-    ctx.lineTo(padding, padding + radius);
-    ctx.quadraticCurveTo(padding, padding, padding + radius, padding);
-    ctx.closePath();
-    ctx.fill();
-
-    // 3. Draw Medical Plus Sign (Simplified version of fa-plus-medical)
-    ctx.fillStyle = 'white';
-    const centerX = 512;
-    const centerY = 512;
-    const thickness = 140;
-    const length = 460;
-
-    // Vertical bar
-    ctx.fillRect(centerX - (thickness / 2), centerY - (length / 2), thickness, length);
-    // Horizontal bar
-    ctx.fillRect(centerX - (length / 2), centerY - (thickness / 2), length, thickness);
-
-    // 4. Export as PNG
-    const link = document.createElement('a');
-    link.download = 'medcare-alert-logo.png';
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-  };
-
   if (isVerifying) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-16 h-16 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
-          <p className="text-slate-500 font-black uppercase tracking-widest text-xs">Verifying Session...</p>
+          <p className="text-slate-500 font-black uppercase tracking-widest text-xs">Vérification de la session...</p>
         </div>
       </div>
     );
@@ -209,74 +192,94 @@ const App: React.FC = () => {
   }
 
   return (
-    <NotificationProvider medications={medications} onViewChange={setView}>
-      <Layout 
-        user={user} 
-        currentView={view} 
-        onViewChange={setView} 
-        onLogout={handleLogout}
-      >
-        {view === 'dashboard' && (
-          <Dashboard 
-            user={user} 
-            token={token}
-            medications={medications} 
-            setMedications={handleMedicationChange} 
-            onViewChange={setView}
-          />
-        )}
-        {view === 'map' && canAccess('map', user.role) && <PharmacyMap pharmacies={[]} />}
-        {view === 'history' && canAccess('history', user.role) && <HistoryView medications={medications} token={token} />}
-        {view === 'inventory' && canAccess('inventory', user.role) && <InventoryManager user={user} token={token} />}
-        {view === 'requests' && canAccess('requests', user.role) && <RequestsManager user={user} token={token} />}
-        {view === 'admin' && canAccess('admin', user.role) && <AdminPanel token={token} />}
-        {view === 'schedule' && canAccess('schedule', user.role) && (
-          <ScheduleView
-            medications={medications}
-            onTakeMedication={async (id: string) => {
-              try {
-                const response = await fetch(`${API_BASE}/medications/${id}/take`, {
-                  method: 'PATCH',
-                  headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (!response.ok) throw new Error('Erreur');
-                const updatedMed = await response.json();
-                const today = new Date().toISOString().split('T')[0];
-                const takenTodayCount = (updatedMed.history || []).filter((h: any) => h.date === today && h.status === 'taken').length;
-                handleMedicationChange(prev => prev.map(m => (m.id === id || (m as any)._id === id) ? { ...updatedMed, takenTodayCount } : m));
-              } catch {
-                handleMedicationChange(prev => prev.map(m => {
-                  if (m.id === id || (m as any)._id === id) {
-                    const now = new Date();
-                    return {
-                      ...m,
-                      takenTodayCount: (m.takenTodayCount || 0) + 1,
-                      stockCount: Math.max(0, (m.stockCount || 0) - 1),
-                      history: [...(m.history || []), { date: now.toISOString().split('T')[0], time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), status: 'taken' as const }]
-                    };
+    <AppFeedbackProvider>
+      <NotificationProvider medications={medications} token={token} onViewChange={setView}>
+        <Layout 
+          user={user} 
+          currentView={view} 
+          onViewChange={setView} 
+          onLogout={handleLogout}
+        >
+          {view === 'dashboard' && (
+            <Dashboard 
+              user={user} 
+              token={token}
+              medications={medications} 
+              setMedications={handleMedicationChange} 
+              onViewChange={setView}
+            />
+          )}
+          {view === 'map' && canAccess('map', user.role) && <PharmacyMap user={user} />}
+          {view === 'pharmacy-stock' && canAccess('pharmacy-stock', user.role) && <PharmacyStockCatalog user={user} />}
+          {view === 'history' && canAccess('history', user.role) && <HistoryView medications={medications} token={token} />}
+          {view === 'inventory' && canAccess('inventory', user.role) && <InventoryManager user={user} token={token} />}
+          {view === 'requests' && canAccess('requests', user.role) && <RequestsManager user={user} token={token} />}
+          {view === 'admin' && canAccess('admin', user.role) && <AdminPanel token={token} />}
+          {view === 'schedule' && canAccess('schedule', user.role) && (
+            <ScheduleView
+              medications={medications}
+              onTakeMedication={async (id: string, scheduledTime?: string) => {
+                try {
+                  const response = await fetch(`${API_BASE}/medications/${id}/take`, {
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(scheduledTime ? { scheduledTime } : {}),
+                  });
+                  if (!response.ok) {
+                    if (response.status === 409) {
+                      const duplicatePayload = await readApiResponse<any>(response);
+                      const serverMed = duplicatePayload?.medication;
+                      if (serverMed) {
+                        const today = new Date().toISOString().split('T')[0];
+                        const takenTodayCount = (serverMed.history || []).filter((h: any) => h.date === today && h.status === 'taken').length;
+                        handleMedicationChange(prev => prev.map(m => (m.id === id || (m as any)._id === id) ? { ...serverMed, takenTodayCount } : m));
+                        return;
+                      }
+                    }
+                    throw new Error('Erreur');
                   }
-                  return m;
-                }));
-              }
-            }}
-            onViewChange={setView}
-          />
-        )}
-        {view === 'profile' && (
-          <ProfileManager
-            user={user}
-            token={token}
-            medications={medications}
-            onUserUpdate={(updatedUser) => {
-              setUser(updatedUser);
-              localStorage.setItem('user', JSON.stringify(updatedUser));
-            }}
-            onLogout={handleLogout}
-            onViewChange={setView}
-          />
-        )}
-      </Layout>
-    </NotificationProvider>
+                  const updatedMed = await readApiResponse<any>(response);
+                  const today = new Date().toISOString().split('T')[0];
+                  const takenTodayCount = (updatedMed.history || []).filter((h: any) => h.date === today && h.status === 'taken').length;
+                  handleMedicationChange(prev => prev.map(m => (m.id === id || (m as any)._id === id) ? { ...updatedMed, takenTodayCount } : m));
+                } catch {
+                  handleMedicationChange(prev => prev.map(m => {
+                    if (m.id === id || (m as any)._id === id) {
+                      const now = new Date();
+                      const resolvedTime = resolveFallbackDoseTime(m, scheduledTime);
+                      return {
+                        ...m,
+                        takenTodayCount: (m.takenTodayCount || 0) + 1,
+                        stockCount: Math.max(0, (m.stockCount || 0) - 1),
+                        history: [...(m.history || []), { date: now.toISOString().split('T')[0], time: resolvedTime, status: 'taken' as const }]
+                      };
+                    }
+                    return m;
+                  }));
+                }
+              }}
+              onViewChange={setView}
+            />
+          )}
+          {view === 'profile' && (
+            <ProfileManager
+              user={user}
+              token={token}
+              medications={medications}
+              onUserUpdate={(updatedUser) => {
+                setUser(updatedUser);
+                localStorage.setItem('user', JSON.stringify(updatedUser));
+              }}
+              onLogout={handleLogout}
+              onViewChange={setView}
+            />
+          )}
+        </Layout>
+      </NotificationProvider>
+    </AppFeedbackProvider>
   );
 };
 

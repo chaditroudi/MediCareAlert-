@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const UPLOADS_DIR = path.resolve(__dirname, '../../uploads');
 
 // Ensure uploads directories exist
-for (const dir of ['prescriptions', 'medications']) {
+for (const dir of ['prescriptions', 'medications', 'profiles']) {
   const full = path.join(UPLOADS_DIR, dir);
   if (!fs.existsSync(full)) {
     fs.mkdirSync(full, { recursive: true });
@@ -44,6 +44,15 @@ export const uploadPrescription = multer({
 export const uploadMedicationImage = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, path.join(UPLOADS_DIR, 'medications')),
+    filename: makeFilename,
+  }),
+  limits: { fileSize: MAX_SIZE },
+  fileFilter,
+}).single('image');
+
+export const uploadProfileImage = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, path.join(UPLOADS_DIR, 'profiles')),
     filename: makeFilename,
   }),
   limits: { fileSize: MAX_SIZE },

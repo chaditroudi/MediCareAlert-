@@ -1,26 +1,30 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { io, Socket } from 'socket.io-client';
 import { Medication } from '../types';
+import { SOCKET_URL } from '../lib/appConfig';
 
 interface NotificationProviderProps {
   children: React.ReactNode;
   medications: Medication[];
+  token?: string;
   onViewChange?: (view: any) => void;
 }
 
 interface ActiveAlert {
   id: string;
-  type: 'REMINDER' | 'STOCK';
+  type: 'REMINDER' | 'MISSED' | 'STOCK';
   message: string;
   medName: string;
+  stockState?: 'LOW' | 'OUT';
 }
 
-const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, medications, onViewChange }) => {
+const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, medications, token, onViewChange }) => {
   const [activeAlerts, setActiveAlerts] = useState<ActiveAlert[]>([]);
   const [permission, setPermission] = useState<NotificationPermission>('default');
   const hasWelcomed = useRef(false);
-  const remindedThisMinute = useRef<Set<string>>(new Set());
   const stockAlerted = useRef<Set<string>>(new Set());
+  const socketRef = useRef<Socket | null>(null);
 
   // Request browser notification permission on mount
   useEffect(() => {
@@ -33,10 +37,12 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
   }, []);
 
   // Helper to trigger a real system notification
-  const sendSystemNotification = useCallback((title: string, body: string, iconType: 'STOCK' | 'REMINDER' | 'SYSTEM') => {
+  const sendSystemNotification = useCallback((title: string, body: string, iconType: 'STOCK' | 'REMINDER' | 'MISSED' | 'SYSTEM') => {
     if ('Notification' in window && Notification.permission === 'granted') {
       const icon = iconType === 'STOCK' 
         ? 'https://cdn-icons-png.flaticon.com/512/595/595067.png' 
+        : iconType === 'MISSED'
+          ? 'https://cdn-icons-png.flaticon.com/512/564/564619.png'
         : iconType === 'REMINDER'
           ? 'https://cdn-icons-png.flaticon.com/512/3119/3119338.png'
           : 'https://cdn-icons-png.flaticon.com/512/190/190411.png';
@@ -55,7 +61,11 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
     const id = Math.random().toString(36).substr(2, 9);
     setActiveAlerts(prev => [...prev, { ...alert, id }]);
     
-    const title = alert.type === 'STOCK' ? '⚠️ Alerte Stock : ' + alert.medName : '💊 Rappel Médicament : ' + alert.medName;
+    const title = alert.type === 'STOCK'
+      ? `${alert.stockState === 'OUT' ? '🚨 Rupture de Stock' : '⚠️ Alerte Stock'} : ${alert.medName}`
+      : alert.type === 'MISSED'
+        ? '⌛ Dose manquée : ' + alert.medName
+        : '💊 Rappel Médicament : ' + alert.medName;
     sendSystemNotification(title, alert.message, alert.type);
 
     // Auto-dismiss the UI toast after 10 seconds
@@ -63,6 +73,38 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
       setActiveAlerts(prev => prev.filter(a => a.id !== id));
     }, 10000);
   }, [sendSystemNotification]);
+
+  // Connect to Socket.io for real-time server-side reminders
+  useEffect(() => {
+    if (!token) return;
+
+    const socket = io(SOCKET_URL, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+    });
+    socketRef.current = socket;
+
+    socket.on('med:reminder', (data: {
+      type: 'DOSE_NOW' | 'DOSE_UPCOMING' | 'DOSE_MISSED';
+      medName: string;
+      dosage: string;
+      doseTime: string;
+      minutesBefore: number;
+      message: string;
+    }) => {
+      const alertType: ActiveAlert['type'] = data.type === 'DOSE_MISSED' ? 'MISSED' : 'REMINDER';
+      addAlert({
+        type: alertType,
+        medName: data.medName,
+        message: data.message,
+      });
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [token, addAlert]);
 
   // Welcome Alert
   useEffect(() => {
@@ -76,41 +118,6 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
     }
   }, [permission, addAlert]);
 
-  // Check for intake reminders every 10 seconds for better accuracy
-  useEffect(() => {
-    const checkReminders = () => {
-      const now = new Date();
-      const currentMinute = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-      
-      // Reset tracked reminders when the minute changes
-      const minuteKey = currentMinute;
-      const prevKeys = Array.from(remindedThisMinute.current);
-      if (prevKeys.length > 0 && !prevKeys[0]?.startsWith(currentMinute + '|')) {
-        remindedThisMinute.current.clear();
-      }
-      
-      medications.forEach(med => {
-        if (!med.isActive && med.isActive !== undefined) return;
-        if (med.schedules?.includes(currentMinute)) {
-          const key = `${currentMinute}|${med.name}`;
-          if (!remindedThisMinute.current.has(key)) {
-            remindedThisMinute.current.add(key);
-            addAlert({
-              type: 'REMINDER',
-              medName: med.name,
-              message: `C'est l'heure de votre dose de ${med.name} (${med.dosage}).`
-            });
-          }
-        }
-      });
-    };
-
-    // Run immediately on mount/medication change
-    checkReminders();
-    const interval = setInterval(checkReminders, 10000);
-    return () => clearInterval(interval);
-  }, [medications, addAlert]);
-
   // Check for stock alerts whenever medications change
   useEffect(() => {
     medications.forEach(med => {
@@ -122,6 +129,7 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
           addAlert({
             type: 'STOCK',
             medName: med.name,
+            stockState: 'LOW',
             message: `Attention : Le stock de ${med.name} est bas (${med.stockCount} restants). Pensez à vous réapprovisionner !`
           });
         }
@@ -132,6 +140,7 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
           addAlert({
             type: 'STOCK',
             medName: med.name,
+            stockState: 'OUT',
             message: `Rupture : Vous n'avez plus de ${med.name} !`
           });
         }
@@ -152,20 +161,28 @@ const NotificationProvider: React.FC<NotificationProviderProps> = ({ children, m
             key={alert.id}
             className={`pointer-events-auto w-full p-5 rounded-[2rem] shadow-2xl border backdrop-blur-xl animate-in slide-in-from-right duration-500 ${
               alert.type === 'STOCK' 
-                ? 'bg-red-600 border-red-500 text-white' 
-                : 'bg-slate-900 border-white/10 text-white'
+                ? 'bg-rose-600 border-rose-500 text-white' 
+                : alert.type === 'MISSED'
+                  ? 'bg-amber-500 border-amber-400 text-slate-950'
+                  : 'bg-[#0B2239] border-white/10 text-white'
             }`}
           >
             <div className="flex items-start gap-4">
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
-                alert.type === 'STOCK' ? 'bg-white/20' : 'bg-blue-500'
+                alert.type === 'STOCK' ? 'bg-white/20' : alert.type === 'MISSED' ? 'bg-white/40' : 'bg-[#0A74DA]'
               }`}>
-                <i className={`fas ${alert.type === 'STOCK' ? 'fa-triangle-exclamation' : 'fa-bell'} text-xl`}></i>
+                <i className={`fas ${alert.type === 'STOCK' ? 'fa-triangle-exclamation' : alert.type === 'MISSED' ? 'fa-clock' : 'fa-bell'} text-xl`}></i>
               </div>
               <div className="flex-1">
                 <div className="flex justify-between items-start">
                   <h4 className="font-black uppercase text-[10px] tracking-widest opacity-70 mb-1">
-                    {alert.type === 'STOCK' ? 'Alerte Stock' : 'Rappel Médicament'}
+                    {alert.type === 'STOCK'
+                      ? alert.stockState === 'OUT'
+                        ? 'Rupture De Stock'
+                        : 'Alerte Stock'
+                      : alert.type === 'MISSED'
+                        ? 'Dose manquée'
+                        : 'Rappel Médicament'}
                   </h4>
                   <button onClick={() => setActiveAlerts(prev => prev.filter(a => a.id !== alert.id))}>
                     <i className="fas fa-times text-xs opacity-50 hover:opacity-100"></i>

@@ -5,7 +5,7 @@ import App from './App';
 
 const container = document.getElementById('root');
 if (!container) {
-  throw new Error("Failed to find the root element");
+  throw new Error("Impossible de trouver l'élément racine");
 }
 
 const root = createRoot(container);

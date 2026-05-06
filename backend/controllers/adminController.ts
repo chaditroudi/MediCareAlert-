@@ -312,13 +312,16 @@ export const createCategory = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Category name is required' });
     }
 
-    const existing = await MedicationCategoryModel.findOne({ name: { $regex: `^${String(name).trim()}$`, $options: 'i' } });
+    const normalizedName = String(name).trim();
+    const existing = await MedicationCategoryModel.findOne({
+      name: { $regex: `^${normalizedName}$`, $options: 'i' }
+    });
     if (existing) {
       return res.status(409).json({ error: 'Category already exists' });
     }
 
     const category = await MedicationCategoryModel.create({
-      name: String(name).trim(),
+      name: normalizedName,
       description: description ? String(description).trim() : '',
     });
     return res.status(201).json(toClient(category));
@@ -331,7 +334,18 @@ export const updateCategory = async (req: Request, res: Response) => {
   try {
     const payload: any = {};
     const { name, description, isActive } = req.body || {};
-    if (typeof name === 'string' && name.trim()) payload.name = name.trim();
+
+    if (typeof name === 'string' && name.trim()) {
+      const normalizedName = name.trim();
+      const duplicate = await MedicationCategoryModel.findOne({
+        _id: { $ne: req.params.id },
+        name: { $regex: `^${normalizedName}$`, $options: 'i' }
+      });
+      if (duplicate) {
+        return res.status(409).json({ error: 'Category already exists' });
+      }
+      payload.name = normalizedName;
+    }
     if (typeof description === 'string') payload.description = description.trim();
     if (typeof isActive === 'boolean') payload.isActive = isActive;
 
@@ -357,10 +371,11 @@ export const toggleCategory = async (req: Request, res: Response) => {
 
 export const deleteCategory = async (req: Request, res: Response) => {
   try {
-    const cat = await MedicationCategoryModel.findByIdAndDelete(req.params.id);
-    if (!cat) return res.status(404).json({ error: 'Category not found' });
+    const category = await MedicationCategoryModel.findByIdAndDelete(req.params.id);
+    if (!category) return res.status(404).json({ error: 'Category not found' });
     return res.sendStatus(204);
   } catch (err) {
     return res.status(500).json({ error: 'Failed to delete category' });
   }
 };
+

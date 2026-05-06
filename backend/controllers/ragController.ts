@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { analyzePrescription, chatWithRAG, streamChatWithRAG, ChatMessage } from '../langchain';
+import { scanPrescriptionOnServer } from '../services/prescriptionAi';
 
 /** POST /api/rag/analyze — Analyze a prescription with RAG */
 export const analyzeWithRAG = async (req: Request, res: Response) => {
@@ -13,7 +14,22 @@ export const analyzeWithRAG = async (req: Request, res: Response) => {
     return res.json({ analysis });
   } catch (err: any) {
     console.error('RAG analysis error:', err);
-    return res.status(500).json({ error: 'Failed to analyze prescription', details: err.message });
+    return res.status(500).json({ error: 'Failed to analyze prescription' });
+  }
+};
+
+export const scanPrescriptionImage = async (req: Request, res: Response) => {
+  try {
+    const { base64Image } = req.body;
+    if (!base64Image || typeof base64Image !== 'string') {
+      return res.status(400).json({ error: 'base64Image string is required' });
+    }
+
+    const result = await scanPrescriptionOnServer(base64Image);
+    return res.json(result);
+  } catch (err: any) {
+    console.error('Prescription scan error:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to scan prescription' });
   }
 };
 
@@ -33,7 +49,7 @@ export const chat = async (req: Request, res: Response) => {
     return res.json({ answer });
   } catch (err: any) {
     console.error('RAG chat error:', err);
-    return res.status(500).json({ error: 'Failed to get response', details: err.message });
+    return res.status(500).json({ error: 'Failed to get response' });
   }
 };
 
@@ -66,10 +82,10 @@ export const chatStream = async (req: Request, res: Response) => {
     console.error('RAG stream error:', err);
     // If headers already sent, just end
     if (res.headersSent) {
-      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: 'Le service IA est temporairement indisponible.' })}\n\n`);
       res.end();
     } else {
-      return res.status(500).json({ error: 'Failed to stream response', details: err.message });
+      return res.status(500).json({ error: 'Failed to stream response' });
     }
   }
 };

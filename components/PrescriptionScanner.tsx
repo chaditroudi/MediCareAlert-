@@ -2,6 +2,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { scanPrescriptionAdvanced, ExtendedScanResult } from '../geminiService';
 import { preprocessImage, quickQualityCheck, PreprocessingResult } from '../imagePreprocessing';
+import { API_BASE } from '../lib/appConfig';
 
 type Step = 'upload' | 'preprocess' | 'scanning' | 'results';
 
@@ -24,7 +25,7 @@ interface PrescriptionScannerProps {
 const STEPS: { key: Step; label: string; icon: string }[] = [
   { key: 'upload', label: 'Photo', icon: 'fa-camera' },
   { key: 'preprocess', label: 'Qualité', icon: 'fa-sliders' },
-  { key: 'scanning', label: 'Analyse', icon: 'fa-brain' },
+  { key: 'scanning', label: 'Lecture', icon: 'fa-file-lines' },
   { key: 'results', label: 'Résultats', icon: 'fa-check-circle' },
 ];
 
@@ -103,17 +104,20 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
       || (imageDataUrl?.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl) || '';
 
     try {
-      setScanningPhase('Envoi à Gemini AI...');
+      setScanningPhase('Préparation de l\'ordonnance...');
       await new Promise(r => setTimeout(r, 300)); // brief UI update pause
 
-      setScanningPhase('Extraction des médicaments...');
-      const result = await scanPrescriptionAdvanced(base64);
+      setScanningPhase('Lecture des médicaments...');
+      const result = await scanPrescriptionAdvanced(base64, token);
 
-      setScanningPhase('Post-traitement NLP...');
+      setScanningPhase('Vérification des résultats...');
       await new Promise(r => setTimeout(r, 200));
 
       if (result.medications.length === 0 && result.overallConfidence < 0.2) {
-        setError("L'IA n'a trouvé aucun médicament. Essayez une photo plus nette ou ajoutez manuellement.");
+        const warning = result.warnings.find(Boolean);
+        setError(warning && !warning.startsWith('Aucun medicament')
+          ? warning
+          : "Aucun médicament n'a été détecté. Essayez une photo plus nette ou ajoutez manuellement.");
         setStep('preprocess');
         setIsProcessing(false);
         return;
@@ -181,7 +185,7 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
         formData.append('image', blob, 'prescription.jpg');
       }
 
-      await fetch('http://localhost:5000/api/prescriptions', {
+      await fetch(`${API_BASE}/prescriptions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
@@ -229,8 +233,8 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
               <i className="fas fa-prescription-bottle-medical text-lg"></i>
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-800">Scan IA d'Ordonnance</h2>
-              <p className="text-xs text-slate-400">Extraction intelligente propulsée par Gemini</p>
+              <h2 className="text-lg font-bold text-slate-800">Lecture d'Ordonnance</h2>
+              <p className="text-xs text-slate-400">Lecture automatique de l'ordonnance</p>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-2 rounded-full hover:bg-slate-100 transition">
@@ -396,7 +400,7 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
                   disabled={isProcessing}
                   className="flex-[2] py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-medium rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition text-sm disabled:opacity-50"
                 >
-                  <i className="fas fa-brain mr-1"></i> Analyser avec l'IA
+                  <i className="fas fa-file-lines mr-1"></i> Lancer la lecture
                 </button>
               </div>
             </div>
@@ -409,10 +413,10 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
                 <div className="absolute inset-0 border-4 border-blue-200 rounded-full animate-ping opacity-20"></div>
                 <div className="absolute inset-0 border-4 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
                 <div className="absolute inset-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center">
-                  <i className="fas fa-brain text-white text-xl"></i>
+                  <i className="fas fa-file-medical text-white text-xl"></i>
                 </div>
               </div>
-              <p className="text-lg font-semibold text-slate-700 mb-1">Analyse en cours</p>
+              <p className="text-lg font-semibold text-slate-700 mb-1">Traitement en cours</p>
               <p className="text-sm text-blue-600 font-medium">{scanningPhase}</p>
               <div className="flex items-center gap-2 mt-4 text-xs text-slate-400">
                 <i className="fas fa-shield-halved"></i>
@@ -433,7 +437,7 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
                 <div className="w-px h-10 bg-slate-200"></div>
                 <div className="text-center">
                   <p className="text-2xl font-bold text-slate-800">{Math.round(scanResult.overallConfidence * 100)}%</p>
-                  <p className="text-[11px] text-slate-500">confiance</p>
+                  <p className="text-[11px] text-slate-500">fiabilité</p>
                 </div>
                 <div className="w-px h-10 bg-slate-200"></div>
                 <div className="text-center">
@@ -451,7 +455,7 @@ const PrescriptionScanner: React.FC<PrescriptionScannerProps> = ({ token, onClos
                 )}
               </div>
 
-              {/* Warnings from AI */}
+              {/* Warnings from scan */}
               {scanResult.warnings.length > 0 && (
                 <div className="space-y-1.5">
                   {scanResult.warnings.map((w, i) => (

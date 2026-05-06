@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Pharmacy, PharmacyInventory } from '../types';
+import { Pharmacy, PharmacyInventory, User, UserRole } from '../types';
+import { API_BASE } from '../lib/appConfig';
 
 interface PharmacyMapProps {
-  pharmacies: Pharmacy[];
+  user: User;
 }
 
 type Coordinates = { lat: number; lng: number };
@@ -19,6 +20,7 @@ type PharmacyResult = {
   phone?: string;
   source: 'db' | 'overpass';
   services: string[];
+  inventoryItems?: PharmacyInventory[];
   inventorySummary?: Record<PharmacyInventory['stockStatus'], number>;
   medicationMatchStatus?: PharmacyInventory['stockStatus'] | 'unknown' | null;
 };
@@ -71,13 +73,12 @@ const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const OSRM_BASE_URL = 'https://router.project-osrm.org/route/v1';
 const LEAFLET_JS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
 const LEAFLET_CSS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-const API_BASE = 'http://localhost:5000/api';
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 const GEOLOCATION_MESSAGES: Record<number, string> = {
-  1: 'Location permission was denied. Enter your city or address below to continue.',
-  2: 'Your position is unavailable right now. You can type a city or address instead.',
-  3: 'Location request timed out. Try again or enter your city or address manually.',
+  1: 'L’autorisation de localisation a été refusée. Saisissez votre ville ou votre adresse ci-dessous pour continuer.',
+  2: 'Votre position est indisponible pour le moment. Vous pouvez saisir une ville ou une adresse à la place.',
+  3: 'La demande de localisation a expiré. Réessayez ou saisissez votre ville ou votre adresse manuellement.',
 };
 
 const haversineDistanceKm = (from: Coordinates, to: Coordinates) => {
@@ -141,6 +142,13 @@ const findMedicationMatchStatus = (items: PharmacyInventory[], medicationQuery: 
   const query = normalizeText(medicationQuery);
   const match = items.find((item) => normalizeText(item.medicationName).includes(query));
   return match ? match.stockStatus : 'unknown';
+};
+
+const stockStatusMeta: Record<PharmacyInventory['stockStatus'], { label: string; className: string }> = {
+  available: { label: 'Disponible', className: 'bg-emerald-50 text-emerald-700' },
+  low: { label: 'Stock bas', className: 'bg-amber-50 text-amber-700' },
+  out_of_stock: { label: 'Rupture', className: 'bg-rose-50 text-rose-700' },
+  expired: { label: 'Expiré', className: 'bg-slate-100 text-slate-600' },
 };
 
 const fetchWithRetry = async (input: RequestInfo | URL, init: RequestInit | undefined, retries = 3, baseDelayMs = 700) => {
@@ -216,9 +224,9 @@ const loadLeaflet = () => {
   return leafletLoader;
 };
 
-const PharmacyMap: React.FC<PharmacyMapProps> = () => {
+const PharmacyMap: React.FC<PharmacyMapProps> = ({ user }) => {
   const [locatorStatus, setLocatorStatus] = useState<LocatorStatus>('idle');
-  const [statusMessage, setStatusMessage] = useState('Waiting for your location.');
+  const [statusMessage, setStatusMessage] = useState('En attente de votre position.');
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [manualLocation, setManualLocation] = useState('');
   const [manualLoading, setManualLoading] = useState(false);
@@ -243,6 +251,22 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
   const userMarkerRef = useRef<LeafletMarker | null>(null);
   const pharmacyMarkersRef = useRef<LeafletMarker[]>([]);
   const routeLineRef = useRef<LeafletPolyline | null>(null);
+  const latestUserLocationRef = useRef<Coordinates | null>(null);
+
+  const savedProfileLocation = useMemo(() => {
+    if (
+      user.role !== UserRole.PATIENT ||
+      typeof user.location?.lat !== 'number' ||
+      typeof user.location?.lng !== 'number'
+    ) {
+      return null;
+    }
+
+    return {
+      lat: user.location.lat,
+      lng: user.location.lng,
+    };
+  }, [user.location, user.role]);
 
   const nearbyDbPharmacies = useMemo(() => {
     if (!userLocation) {
@@ -268,6 +292,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
           phone: pharmacy.phone,
           source: 'db' as const,
           services: pharmacy.services || [],
+          inventoryItems,
           inventorySummary: summarizeInventory(inventoryItems),
           medicationMatchStatus: findMedicationMatchStatus(inventoryItems, medicationFilter),
         };
@@ -314,7 +339,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       return {
         dot: 'bg-emerald-500',
         pill: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-        label: 'Active',
+        label: 'Actif',
       };
     }
 
@@ -322,7 +347,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       return {
         dot: 'bg-blue-500 animate-pulse',
         pill: 'bg-blue-50 text-blue-700 border-blue-200',
-        label: 'Locating',
+        label: 'Localisation',
       };
     }
 
@@ -330,14 +355,14 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       return {
         dot: 'bg-amber-500',
         pill: 'bg-amber-50 text-amber-700 border-amber-200',
-        label: 'Manual',
+        label: 'Manuel',
       };
     }
 
     return {
       dot: 'bg-rose-500',
       pill: 'bg-rose-50 text-rose-700 border-rose-200',
-      label: 'Needs Attention',
+      label: 'Action requise',
     };
   }, [locatorStatus]);
 
@@ -360,7 +385,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
         mapRef.current = map;
       })
       .catch(() => {
-        setStatusMessage('The map could not be loaded. Refresh the page and try again.');
+        setStatusMessage('La carte n’a pas pu être chargée. Actualisez la page puis réessayez.');
         setLocatorStatus('error');
       });
 
@@ -419,7 +444,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       } catch (error) {
         console.error(error);
         if (!cancelled) {
-          setDbError('Your saved pharmacy records could not be loaded from the local API.');
+          setDbError('Les pharmacies enregistrées dans l’application n’ont pas pu être chargées depuis l’API locale.');
         }
       } finally {
         if (!cancelled) {
@@ -465,7 +490,11 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
     }
 
     mapRef.current.flyTo([userLocation.lat, userLocation.lng], 14);
-    userMarkerRef.current.bindPopup('Your location');
+    userMarkerRef.current.bindPopup('Votre position');
+  }, [userLocation]);
+
+  useEffect(() => {
+    latestUserLocationRef.current = userLocation;
   }, [userLocation]);
 
   useEffect(() => {
@@ -482,7 +511,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       const marker = L.marker([pharmacy.location.lat, pharmacy.location.lng])
         .addTo(mapRef.current!)
         .bindPopup(
-          `<strong>${pharmacy.name}</strong><br/>${pharmacy.address}<br/>${formatDistance(pharmacy.distanceKm)}${pharmacy.source === 'db' ? '<br/>Saved in your app' : ''}`
+          `<strong>${pharmacy.name}</strong><br/>${pharmacy.address}<br/>${formatDistance(pharmacy.distanceKm)}${pharmacy.source === 'db' ? '<br/>Enregistrée dans l’application' : ''}`
         );
 
       pharmacyMarkersRef.current.push(marker);
@@ -543,8 +572,8 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
 
           return {
             id: String(element.id ?? index),
-            name: tags.name || 'Nearby Pharmacy',
-            address: addressParts.join(' ').trim() || tags['addr:full'] || 'Address not available',
+            name: tags.name || 'Pharmacie à proximité',
+            address: addressParts.join(' ').trim() || tags['addr:full'] || 'Adresse non disponible',
             location: pharmacyLocation,
             distanceKm,
             phone: tags.phone || tags['contact:phone'] || '',
@@ -559,34 +588,57 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       setRouteError('');
     } catch (error) {
       console.error(error);
-      setSearchError('We could not load nearby pharmacies right now. Please retry.');
+      setSearchError('Impossible de charger les pharmacies à proximité pour le moment. Veuillez réessayer.');
       setOverpassPharmacies([]);
     } finally {
       setSearchLoading(false);
     }
   };
 
+  useEffect(() => {
+    if (!savedProfileLocation) {
+      return;
+    }
+
+    setUserLocation(savedProfileLocation);
+    setRoute(null);
+    setRouteError('');
+    setSearchError('');
+    setManualError('');
+    setLocatorStatus('active');
+    setStatusMessage('Using the location saved in your profile to find the nearest pharmacies.');
+    searchNearbyPharmacies(savedProfileLocation, searchRadius);
+  }, [savedProfileLocation]);
+
+  useEffect(() => {
+    if (!latestUserLocationRef.current) {
+      return;
+    }
+
+    searchNearbyPharmacies(latestUserLocationRef.current, searchRadius);
+  }, [searchRadius]);
+
   const handleGeolocationSuccess = async (coords: Coordinates, source: 'gps' | 'manual') => {
     setUserLocation(coords);
     setRoute(null);
     setRouteError('');
     setSearchError('');
-    setStatusMessage(source === 'gps' ? 'Location found. Searching nearby pharmacies.' : 'Manual location found. Searching nearby pharmacies.');
+    setStatusMessage(source === 'gps' ? 'Position trouvée. Recherche des pharmacies à proximité.' : 'Position manuelle trouvée. Recherche des pharmacies à proximité.');
     setLocatorStatus('active');
     await searchNearbyPharmacies(coords);
-    setStatusMessage(source === 'gps' ? 'Location active. Nearby pharmacies are ready.' : 'Manual location active. Nearby pharmacies are ready.');
+    setStatusMessage(source === 'gps' ? 'Position active. Les pharmacies à proximité sont prêtes.' : 'Position manuelle active. Les pharmacies à proximité sont prêtes.');
     setLocatorStatus('active');
   };
 
   const requestLocation = () => {
     if (!navigator.geolocation) {
       setLocatorStatus('error');
-      setStatusMessage('Geolocation is not supported in this browser. Enter your city or address below.');
+      setStatusMessage('La géolocalisation n’est pas prise en charge par ce navigateur. Saisissez votre ville ou votre adresse ci-dessous.');
       return;
     }
 
     setLocatorStatus('locating');
-    setStatusMessage('Locating you...');
+    setStatusMessage('Localisation en cours...');
     setManualError('');
 
     navigator.geolocation.getCurrentPosition(
@@ -612,8 +664,12 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
   };
 
   useEffect(() => {
+    if (savedProfileLocation) {
+      return;
+    }
+
     requestLocation();
-  }, []);
+  }, [savedProfileLocation]);
 
   const handleManualLocationSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -642,7 +698,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       const firstResult = results?.[0];
 
       if (!firstResult) {
-        setManualError('We could not find that place. Try a more specific city or address.');
+        setManualError('Impossible de trouver cet endroit. Essayez une ville ou une adresse plus précise.');
         return;
       }
 
@@ -655,7 +711,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
       );
     } catch (error) {
       console.error(error);
-      setManualError('Manual location lookup failed. Please try again.');
+      setManualError('La recherche de la position manuelle a échoué. Veuillez réessayer.');
     } finally {
       setManualLoading(false);
     }
@@ -663,7 +719,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
 
   const fetchRoute = async (pharmacy: PharmacyResult, mode = routeMode) => {
     if (!userLocation) {
-      setRouteError('Set your location before requesting directions.');
+      setRouteError('Définissez votre position avant de demander un itinéraire.');
       return;
     }
 
@@ -708,17 +764,17 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
     } catch (error) {
       console.error(error);
       setRoute(null);
-      setRouteError('Directions could not be loaded right now. Please retry.');
+      setRouteError('Impossible de charger l’itinéraire pour le moment. Veuillez réessayer.');
     } finally {
       setRouteLoading(false);
     }
   };
 
   const resultHeading = searchLoading
-    ? 'Finding pharmacies near you...'
+    ? 'Recherche des pharmacies près de vous...'
     : pharmacies.length > 0
-      ? `${pharmacies.length} pharmacies found`
-      : 'Nearby pharmacies';
+      ? `${pharmacies.length} pharmacies trouvées`
+      : 'Pharmacies à proximité';
 
   useEffect(() => {
     if (pharmacies.length === 0) {
@@ -746,7 +802,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
               <span className={`w-2.5 h-2.5 rounded-full ${statusTone.dot}`}></span>
               {statusTone.label}
             </div>
-            <h2 className="mt-4 text-2xl font-black text-slate-900">Pharmacy Locator</h2>
+            <h2 className="mt-4 text-2xl font-black text-slate-900">Localisateur de pharmacies</h2>
             <p className="mt-2 text-sm text-slate-500 font-medium">{statusMessage}</p>
           </div>
 
@@ -757,12 +813,12 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
               className="px-5 py-3 bg-blue-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition disabled:opacity-60 flex items-center gap-3"
             >
               {locatorStatus === 'locating' ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-location-crosshairs"></i>}
-              {locatorStatus === 'locating' ? 'Locating you...' : 'Use My Location'}
+              {locatorStatus === 'locating' ? 'Localisation...' : 'Utiliser ma position'}
             </button>
 
             <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
               <label htmlFor="radius" className="text-[11px] font-black uppercase tracking-widest text-slate-500">
-                Radius
+                Rayon
               </label>
               <select
                 id="radius"
@@ -782,7 +838,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
         {(locatorStatus === 'error' || locatorStatus === 'manual') && (
           <form onSubmit={handleManualLocationSubmit} className="mt-6 bg-slate-50 border border-slate-100 rounded-[2rem] p-4 md:p-5">
             <label htmlFor="manual-location" className="block text-[11px] font-black uppercase tracking-widest text-slate-500 mb-3">
-              Enter City Or Address
+              Saisir une ville ou une adresse
             </label>
             <div className="flex flex-col md:flex-row gap-3">
               <input
@@ -790,7 +846,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                 type="text"
                 value={manualLocation}
                 onChange={(event) => setManualLocation(event.target.value)}
-                placeholder="Example: Tunis, Sfax, or 12 Main Street"
+                placeholder="Exemple : Tunis, Sfax ou 12 rue Principale"
                 className="flex-1 px-5 py-4 rounded-2xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-blue-500 text-sm font-semibold text-slate-700"
               />
               <button
@@ -799,7 +855,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                 className="px-6 py-4 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition disabled:opacity-60 flex items-center justify-center gap-3"
               >
                 {manualLoading ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-search-location"></i>}
-                {manualLoading ? 'Searching...' : 'Use This Location'}
+                {manualLoading ? 'Recherche...' : 'Utiliser cette position'}
               </button>
             </div>
             {manualError && <p className="mt-3 text-sm font-semibold text-rose-600">{manualError}</p>}
@@ -813,7 +869,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
               onClick={() => userLocation && searchNearbyPharmacies(userLocation)}
               className="px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-black uppercase tracking-widest hover:bg-rose-700 transition"
             >
-              Retry Search
+              Relancer la recherche
             </button>
           </div>
         )}
@@ -832,39 +888,13 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
               <h3 className="text-lg font-black text-slate-900">{resultHeading}</h3>
               {searchLoading && <i className="fas fa-circle-notch animate-spin text-blue-600"></i>}
             </div>
-            <p className="text-sm text-slate-500 font-medium">
-              Closest pharmacies are sorted using haversine distance from your current location.
-            </p>
-            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
-                <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Saved Pharmacies</p>
-                <p className="mt-2 text-lg font-black text-slate-900">{nearbyDbPharmacies.length}</p>
-              </div>
-              <div className="bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
-                <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Data Sources</p>
-                <p className="mt-2 text-lg font-black text-slate-900">{dbLoading ? 'Syncing...' : 'API + OSM'}</p>
-              </div>
-            </div>
-            <div className="mt-5">
-              <label htmlFor="medication-filter" className="block text-[11px] font-black uppercase tracking-widest text-slate-400 mb-2">
-                Filter By Medication
-              </label>
-              <input
-                id="medication-filter"
-                type="text"
-                value={medicationFilter}
-                onChange={(event) => setMedicationFilter(event.target.value)}
-                placeholder="Example: Doliprane"
-                className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-semibold text-slate-700"
-              />
-            </div>
           </div>
 
           {!searchLoading && pharmacies.length === 0 && !searchError && userLocation && (
             <div className="bg-white border-2 border-dashed border-slate-200 rounded-[2.5rem] p-8 text-center">
               <i className="fas fa-map-location-dot text-4xl text-slate-200 mb-4"></i>
-              <p className="text-base font-black text-slate-700">No pharmacies found nearby</p>
-              <p className="mt-2 text-sm text-slate-500 font-medium">Try increasing the search radius to scan a larger area.</p>
+              <p className="text-base font-black text-slate-700">Aucune pharmacie trouvée à proximité</p>
+              <p className="mt-2 text-sm text-slate-500 font-medium">Essayez d’augmenter le rayon de recherche pour couvrir une zone plus large.</p>
               <button
                 onClick={() => {
                   const nextRadius = Math.min(searchRadius * 2, 10000);
@@ -873,7 +903,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                 }}
                 className="mt-5 px-5 py-3 bg-blue-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition"
               >
-                Increase Radius
+                Augmenter le rayon
               </button>
             </div>
           )}
@@ -897,7 +927,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                   <div className="text-right shrink-0">
                     <p className="text-base font-black text-blue-600">{formatDistance(pharmacy.distanceKm)}</p>
                     <p className="text-[11px] text-slate-400 font-black uppercase tracking-widest">
-                      {pharmacy.source === 'db' ? 'Saved In App' : 'OpenStreetMap'}
+                      {pharmacy.source === 'db' ? 'Enregistrée dans l’app' : 'OpenStreetMap'}
                     </p>
                   </div>
                 </div>
@@ -914,12 +944,12 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     ))}
                     {pharmacy.inventorySummary && (
                       <span className="px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-black uppercase tracking-widest">
-                        {pharmacy.inventorySummary.available} Available
+                        {pharmacy.inventorySummary.available} Disponible
                       </span>
                     )}
                     {pharmacy.inventorySummary && pharmacy.inventorySummary.low > 0 && (
                       <span className="px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-[11px] font-black uppercase tracking-widest">
-                        {pharmacy.inventorySummary.low} Low Stock
+                        {pharmacy.inventorySummary.low} Stock bas
                       </span>
                     )}
                     {pharmacy.medicationMatchStatus && (
@@ -935,8 +965,8 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                         }`}
                       >
                         {pharmacy.medicationMatchStatus === 'unknown'
-                          ? 'Medication Not Listed'
-                          : `Medication ${pharmacy.medicationMatchStatus.replace('_', ' ')}`}
+                          ? 'Médicament non listé'
+                          : `Médicament ${pharmacy.medicationMatchStatus === 'available' ? 'disponible' : pharmacy.medicationMatchStatus === 'low' ? 'en stock bas' : pharmacy.medicationMatchStatus === 'out_of_stock' ? 'en rupture' : 'expiré'}`}
                       </span>
                     )}
                   </div>
@@ -950,7 +980,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     }}
                     className="px-4 py-3 bg-slate-100 text-slate-700 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-200 transition"
                   >
-                    View On Map
+                    Voir sur la carte
                   </button>
                   <button
                     onClick={() => fetchRoute(pharmacy)}
@@ -958,7 +988,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     className="px-4 py-3 bg-blue-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition disabled:opacity-60 flex items-center gap-3"
                   >
                     {routeLoading && isSelected ? <i className="fas fa-circle-notch animate-spin"></i> : <i className="fas fa-route"></i>}
-                    Get Directions
+                    Obtenir l’itinéraire
                   </button>
                 </div>
               </div>
@@ -974,7 +1004,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                 <div className="bg-white/95 px-6 py-4 rounded-2xl shadow-xl flex items-center gap-4">
                   <i className="fas fa-circle-notch animate-spin text-blue-600 text-lg"></i>
                   <span className="text-sm font-black text-slate-900 uppercase tracking-widest">
-                    {locatorStatus === 'locating' ? 'Locating you...' : routeLoading ? 'Building route...' : 'Searching pharmacies...'}
+                    {locatorStatus === 'locating' ? 'Localisation...' : routeLoading ? 'Construction de l’itinéraire...' : 'Recherche des pharmacies...'}
                   </span>
                 </div>
               </div>
@@ -984,9 +1014,9 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
           <div className="bg-white border border-slate-100 rounded-[2.5rem] shadow-sm p-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h3 className="text-lg font-black text-slate-900">Built-in Navigation</h3>
+                <h3 className="text-lg font-black text-slate-900">Navigation intégrée</h3>
                 <p className="mt-2 text-sm text-slate-500 font-medium">
-                  Routes stay inside the app using OSRM and are drawn directly on the Leaflet map.
+                  Les itinéraires restent dans l’application via OSRM et s’affichent directement sur la carte Leaflet.
                 </p>
               </div>
 
@@ -1002,7 +1032,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     }}
                     className={`px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest transition ${routeMode === mode ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                   >
-                    {mode}
+                    {mode === 'driving' ? 'voiture' : mode === 'walking' ? 'marche' : 'vélo'}
                   </button>
                 ))}
               </div>
@@ -1016,7 +1046,7 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     onClick={() => fetchRoute(selectedPharmacy)}
                     className="px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-black uppercase tracking-widest hover:bg-rose-700 transition"
                   >
-                    Retry Route
+                    Relancer l’itinéraire
                   </button>
                 )}
               </div>
@@ -1034,15 +1064,15 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
                     <p className="mt-2 text-base font-black text-blue-600">{formatDistance(route.distanceKm)}</p>
                   </div>
                   <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
-                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Estimated Time</p>
+                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Temps estimé</p>
                     <p className="mt-2 text-base font-black text-emerald-600">{formatDuration(route.durationMin)}</p>
                   </div>
                 </div>
 
                 <div>
-                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-3">Route Steps</p>
+                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-3">Étapes du trajet</p>
                   <div className="space-y-2">
-                    {(route.steps.length > 0 ? route.steps : ['Route ready on the map.']).map((step, index) => (
+                    {(route.steps.length > 0 ? route.steps : ['Itinéraire affiché sur la carte.']).map((step, index) => (
                       <div key={`${step}-${index}`} className="flex items-start gap-3 bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3">
                         <span className="w-7 h-7 rounded-full bg-blue-600 text-white text-[11px] font-black flex items-center justify-center shrink-0">
                           {index + 1}
@@ -1056,8 +1086,8 @@ const PharmacyMap: React.FC<PharmacyMapProps> = () => {
             ) : (
               <div className="mt-6 bg-slate-50 border border-slate-100 rounded-[2rem] p-6 text-center">
                 <i className="fas fa-route text-3xl text-slate-300 mb-3"></i>
-                <p className="text-base font-black text-slate-700">Pick a pharmacy to generate directions</p>
-                <p className="mt-2 text-sm text-slate-500 font-medium">The route line will appear directly on the map above.</p>
+                <p className="text-base font-black text-slate-700">Choisissez une pharmacie pour générer un itinéraire</p>
+                <p className="mt-2 text-sm text-slate-500 font-medium">Le tracé apparaîtra directement sur la carte ci-dessus.</p>
               </div>
             )}
           </div>

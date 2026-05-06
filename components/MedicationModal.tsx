@@ -1,6 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { Medication } from '../types';
+import { resolveAssetUrl } from '../lib/appConfig';
 
 interface MedicationModalProps {
   onClose: () => void;
@@ -20,7 +21,7 @@ const MedicationModal: React.FC<MedicationModalProps> = ({ onClose, onSave, edit
   });
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(
-    (editMed as any)?.imageUrl ? `http://localhost:5000${(editMed as any).imageUrl}` : null
+    resolveAssetUrl((editMed as any)?.imageUrl)
   );
   const fileRef = useRef<HTMLInputElement>(null);
 

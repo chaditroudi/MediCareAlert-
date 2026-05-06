@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { PharmacyModel, PharmacyInventoryModel } from '../models';
+import { PharmacyModel, PharmacyInventoryModel, UserModel } from '../models';
 import { toClient, toId } from '../helpers/utils';
 
 export const getAll = async (req: Request, res: Response) => {
@@ -55,6 +55,32 @@ export const create = async (req: Request, res: Response) => {
   }
 };
 
+export const getStockCatalog = async (_req: Request, res: Response) => {
+  try {
+    const pharmacies = await PharmacyModel.find({ isActive: true }).sort({ name: 1 });
+    const pharmacyIds = pharmacies.map((pharmacy) => pharmacy._id);
+    const inventory = await PharmacyInventoryModel.find({ pharmacyId: { $in: pharmacyIds } }).sort({ medicationName: 1, updatedAt: -1 });
+
+    const inventoryByPharmacy = inventory.reduce<Record<string, any[]>>((acc, item) => {
+      const pharmacyId = toId(item.pharmacyId);
+      if (!acc[pharmacyId]) {
+        acc[pharmacyId] = [];
+      }
+      acc[pharmacyId].push(toClient(item));
+      return acc;
+    }, {});
+
+    return res.json(
+      pharmacies.map((pharmacy) => ({
+        ...toClient(pharmacy),
+        inventory: inventoryByPharmacy[toId(pharmacy._id)] || [],
+      }))
+    );
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to fetch pharmacy stock catalog' });
+  }
+};
+
 export const update = async (req: Request, res: Response) => {
   try {
     const pharmacy = await PharmacyModel.findByIdAndUpdate(req.params.id, req.body || {}, { new: true });
@@ -62,5 +88,44 @@ export const update = async (req: Request, res: Response) => {
     return res.json(toClient(pharmacy));
   } catch (err) {
     return res.status(400).json({ error: 'Failed to update pharmacy' });
+  }
+};
+
+/** PATCH /api/pharmacies/mine — pharmacist updates their own pharmacy */
+export const updateMine = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const user = await UserModel.findById(userId).lean();
+    if (!user || !user.pharmacyId) {
+      return res.status(404).json({ error: 'No pharmacy is linked to your account. Ask an admin to assign you one.' });
+    }
+
+    const allowed = ['name', 'address', 'phone', 'services', 'location'];
+    const update: Record<string, any> = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) update[key] = req.body[key];
+    }
+
+    const pharmacy = await PharmacyModel.findByIdAndUpdate(user.pharmacyId, update, { new: true });
+    if (!pharmacy) return res.status(404).json({ error: 'Pharmacy not found' });
+    return res.json(toClient(pharmacy));
+  } catch (err) {
+    return res.status(400).json({ error: 'Failed to update pharmacy' });
+  }
+};
+
+/** GET /api/pharmacies/mine — pharmacist fetches their own pharmacy */
+export const getMine = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const user = await UserModel.findById(userId).lean();
+    if (!user || !user.pharmacyId) {
+      return res.json(null);
+    }
+    const pharmacy = await PharmacyModel.findById(user.pharmacyId);
+    if (!pharmacy) return res.json(null);
+    return res.json(toClient(pharmacy));
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to fetch pharmacy' });
   }
 };

@@ -1,8 +1,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Medication, Prescription } from '../types';
-
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE } from '../lib/appConfig';
 
 interface HistoryViewProps {
   medications: Medication[];
@@ -30,7 +29,6 @@ const HistoryView: React.FC<HistoryViewProps> = ({ medications, token }) => {
   const totalEntries = medications.flatMap(m => m.history).length;
   const takenCount = medications.flatMap(m => m.history).filter(h => h.status === 'taken').length;
   const missedCount = medications.flatMap(m => m.history).filter(h => h.status === 'missed').length;
-  const adherencePercent = totalEntries > 0 ? Math.round((takenCount / totalEntries) * 100) : 0;
 
   useEffect(() => {
     if (!token) return;
@@ -44,11 +42,11 @@ const HistoryView: React.FC<HistoryViewProps> = ({ medications, token }) => {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-100">
         <h2 className="text-3xl font-black text-slate-900 mb-2">Historique des Prises</h2>
-        <p className="text-slate-500 font-medium">Suivi de votre adhérence au traitement</p>
+        <p className="text-slate-500 font-medium">Consultez l'historique de vos prises et ordonnances</p>
       </div>
 
-      {/* Adherence Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+      {/* History Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm text-center">
           <div className="text-3xl font-black text-slate-900">{totalEntries}</div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Total Prises</p>
@@ -60,11 +58,6 @@ const HistoryView: React.FC<HistoryViewProps> = ({ medications, token }) => {
         <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm text-center">
           <div className="text-3xl font-black text-red-600">{missedCount}</div>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Prises Manquées</p>
-        </div>
-        <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm text-center relative overflow-hidden">
-          <div className="text-3xl font-black text-blue-600">{adherencePercent}%</div>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Adhérence</p>
-          <div className="absolute bottom-0 left-0 h-1.5 bg-blue-600 transition-all duration-700" style={{ width: `${adherencePercent}%` }}></div>
         </div>
       </div>
 

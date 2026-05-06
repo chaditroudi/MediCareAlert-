@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { PharmacyInventoryModel, UserModel } from '../models';
 import { toClient, toId } from '../helpers/utils';
-import { publishStockUpdate } from '../kafka';
 
 export const getByPharmacy = async (req: Request, res: Response) => {
   try {
@@ -30,7 +29,7 @@ export const deleteInventoryItem = async (req: Request, res: Response) => {
 
 export const updateInventory = async (req: Request, res: Response) => {
   try {
-    const { medicationName, stockStatus } = req.body || {};
+    const { medicationName, stockStatus, quantity, threshold, category, expiryDate } = req.body || {};
     if (!medicationName || !stockStatus) {
       return res.status(400).json({ error: 'medicationName and stockStatus are required' });
     }
@@ -44,17 +43,16 @@ export const updateInventory = async (req: Request, res: Response) => {
 
     const inventory = await PharmacyInventoryModel.findOneAndUpdate(
       { pharmacyId: req.params.id, medicationName },
-      { stockStatus, lastUpdated: new Date() },
+      {
+        stockStatus,
+        quantity: typeof quantity === 'number' ? Math.max(0, quantity) : undefined,
+        threshold: typeof threshold === 'number' ? Math.max(0, threshold) : undefined,
+        category: typeof category === 'string' ? category : undefined,
+        expiryDate: expiryDate ? new Date(expiryDate) : undefined,
+        lastUpdated: new Date()
+      },
       { upsert: true, new: true }
     );
-
-    await publishStockUpdate({  
-      entityType: 'pharmacy_inventory',
-      entityId: toId(inventory._id),
-      name: inventory.medicationName,
-      stockStatus,
-      pharmacyId: req.params.id
-    });
 
     return res.json(toClient(inventory));
   } catch (err) {

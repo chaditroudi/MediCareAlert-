@@ -13,6 +13,7 @@ export const toPublicUser = (user: any) => ({
   email: user.email,
   role: user.role,
   isActive: user.isActive,
+  profileImageUrl: user.profileImageUrl || undefined,
   location: user.location,
   pharmacyId: user.pharmacyId ? toId(user.pharmacyId) : undefined
 });

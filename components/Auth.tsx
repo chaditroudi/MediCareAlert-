@@ -1,5 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { User, UserRole } from '../types';
+import appLogo from '../assets/medalert-logo.jpeg';
+import { API_BASE } from '../lib/appConfig';
+import { expectOk, getApiErrorMessage, readApiResponse } from '../lib/api';
 
 interface AuthProps {
   onLogin: (user: User, token: string) => void;
@@ -17,10 +20,6 @@ interface AuthResponse {
   error?: string;
 }
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ||
-  'http://localhost:5000/api';
-
 const INITIAL_FORM: FormData = {
   name: '',
   email: '',
@@ -29,7 +28,7 @@ const INITIAL_FORM: FormData = {
 
 const FEATURES = [
   { icon: 'fa-pills', title: 'Gestion des Médicaments', desc: 'Ajoutez et suivez tous vos traitements' },
-  { icon: 'fa-camera', title: 'Scan IA d\'Ordonnance', desc: 'Convertissez vos ordonnances en texte automatiquement' },
+  { icon: 'fa-camera', title: 'Numérisation d\'Ordonnance', desc: 'Extrayez les informations de vos ordonnances' },
   { icon: 'fa-bell', title: 'Rappels Automatiques', desc: 'Ne manquez plus jamais une prise' },
   { icon: 'fa-map-location-dot', title: 'Localiser Pharmacies', desc: 'Trouvez la pharmacie la plus proche' },
 ];
@@ -39,9 +38,29 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [role, setRole] = useState<UserRole>(UserRole.PATIENT);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [formData, setFormData] = useState<FormData>(INITIAL_FORM);
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+
+  // Forgot / Reset password states
+  const [authView, setAuthView] = useState<'auth' | 'forgot' | 'reset'>('auth');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  // Check URL for resetToken on mount
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('resetToken');
+    if (token) {
+      setResetToken(token);
+      setAuthView('reset');
+      // Clean URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const uiText = useMemo(
     () => ({
@@ -63,9 +82,69 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const toggleMode = () => {
     setIsLogin((prev) => !prev);
     setError('');
+    setSuccess('');
     setFormData(INITIAL_FORM);
     setRole(UserRole.PATIENT);
     setShowPassword(false);
+    setAuthView('auth');
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail.trim().toLowerCase() }),
+      });
+      const data = await readApiResponse<{ error?: string; message?: string }>(res);
+      expectOk(res, data, 'Erreur serveur');
+      setSuccess(data.message || 'Un e-mail de réinitialisation a été envoyé si le compte existe.');
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Erreur lors de l\'envoi'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    if (newPassword !== confirmPassword) {
+      setError('Les mots de passe ne correspondent pas');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, password: newPassword }),
+      });
+      const data = await readApiResponse<{ error?: string; message?: string }>(res);
+      expectOk(res, data, 'Erreur serveur');
+      setSuccess('Mot de passe réinitialisé ! Vous pouvez maintenant vous connecter.');
+      setTimeout(() => {
+        setAuthView('auth');
+        setIsLogin(true);
+        setSuccess('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setResetToken('');
+      }, 2500);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erreur lors de la réinitialisation');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const buildPayload = () => {
@@ -83,16 +162,8 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       body: JSON.stringify(buildPayload()),
     });
 
-    let data: AuthResponse | { error?: string } = {};
-    try {
-      data = await response.json();
-    } catch {
-      throw new Error('Réponse serveur invalide.');
-    }
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Échec de connexion au serveur.');
-    }
+    const data = await readApiResponse<AuthResponse | { error?: string }>(response);
+    expectOk(response, data, 'Échec de connexion au serveur.');
 
     if (!('user' in data) || !('token' in data)) {
       throw new Error('Réponse serveur incomplète.');
@@ -145,13 +216,11 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       <div className="relative z-10 hidden w-[45%] flex-col justify-between p-12 lg:flex xl:p-16">
         {/* Logo */}
         <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/30">
-            <i className="fas fa-plus-medical text-xl text-white"></i>
-          </div>
-          <div>
-            <span className="text-xl font-black text-white">MedCare</span>
-            <span className="ml-1 text-xl font-black text-blue-400">Alert+</span>
-          </div>
+          <img
+            src={appLogo}
+            alt="MedAlert+"
+            className="h-16 w-auto rounded-2xl border border-white/10 bg-white object-contain shadow-lg shadow-blue-500/20"
+          />
         </div>
 
         {/* Hero Text */}
@@ -164,7 +233,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
               </span>
             </h2>
             <p className="mt-4 max-w-md text-lg font-medium leading-relaxed text-slate-400">
-              Le suivi médical intelligent conçu pour la Tunisie. Gérez vos traitements, scannez vos ordonnances et ne manquez plus aucune prise.
+              Une application web de suivi médical conçue pour la Tunisie. Gérez vos traitements, scannez vos ordonnances et suivez vos prises simplement.
             </p>
           </div>
 
@@ -198,17 +267,214 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         <div className="w-full max-w-[460px]">
           {/* Mobile Logo */}
           <div className="mb-8 flex items-center justify-center gap-3 lg:hidden">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/30">
-              <i className="fas fa-plus-medical text-white"></i>
-            </div>
-            <div>
-              <span className="text-lg font-black text-white">MedCare</span>
-              <span className="ml-1 text-lg font-black text-blue-400">Alert+</span>
-            </div>
+            <img
+              src={appLogo}
+              alt="MedAlert+"
+              className="h-16 w-auto rounded-2xl border border-white/10 bg-white object-contain shadow-lg shadow-blue-500/20"
+            />
           </div>
 
           {/* Form Card */}
           <div className="rounded-[2.5rem] border border-white/10 bg-white/[0.07] p-8 shadow-2xl shadow-black/20 backdrop-blur-2xl md:p-10">
+
+            {/* ===== FORGOT PASSWORD VIEW ===== */}
+            {authView === 'forgot' && (
+              <>
+                <div className="mb-8">
+                  <button
+                    type="button"
+                    onClick={() => { setAuthView('auth'); setError(''); setSuccess(''); }}
+                    className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-400 transition-colors hover:text-blue-400"
+                  >
+                    <i className="fas fa-arrow-left text-xs"></i> Retour
+                  </button>
+                  <h1 className="text-3xl font-black tracking-tight text-white">Mot de passe oublié</h1>
+                  <p className="mt-2 text-sm font-medium text-slate-400">
+                    Entrez votre adresse e-mail pour recevoir un lien de réinitialisation.
+                  </p>
+                </div>
+
+                <form onSubmit={handleForgotPassword} className="space-y-5" noValidate>
+                  <div className="space-y-2">
+                    <label htmlFor="forgot-email" className="ml-1 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Adresse e-mail
+                    </label>
+                    <div className="relative">
+                      <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                        <i className="fas fa-envelope text-sm"></i>
+                      </div>
+                      <input
+                        id="forgot-email"
+                        type="email"
+                        required
+                        disabled={loading}
+                        placeholder="nom@email.tn"
+                        autoComplete="email"
+                        inputMode="email"
+                        className={inputClass('forgot-email')}
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        onFocus={() => setFocusedField('forgot-email')}
+                        onBlur={() => setFocusedField(null)}
+                      />
+                    </div>
+                  </div>
+
+                  {error && (
+                    <div role="alert" className="flex items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 backdrop-blur-sm">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-500/20 text-red-400">
+                        <i className="fas fa-circle-exclamation text-sm"></i>
+                      </div>
+                      <p className="text-sm font-semibold text-red-300">{error}</p>
+                    </div>
+                  )}
+
+                  {success && (
+                    <div role="status" className="flex items-center gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 backdrop-blur-sm">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
+                        <i className="fas fa-check-circle text-sm"></i>
+                      </div>
+                      <p className="text-sm font-semibold text-emerald-300">{success}</p>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="group relative mt-2 w-full overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 py-4 font-black text-white shadow-xl shadow-blue-500/25 transition-all duration-300 hover:shadow-2xl hover:shadow-blue-500/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-blue-500 to-emerald-500 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                    <span className="relative flex items-center justify-center gap-2">
+                      {loading ? (
+                        <><i className="fas fa-circle-notch animate-spin"></i> Envoi en cours...</>
+                      ) : (
+                        <><i className="fas fa-paper-plane text-sm"></i> Envoyer le lien</>
+                      )}
+                    </span>
+                  </button>
+                </form>
+              </>
+            )}
+
+            {/* ===== RESET PASSWORD VIEW ===== */}
+            {authView === 'reset' && (
+              <>
+                <div className="mb-8">
+                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-emerald-500/20">
+                    <i className="fas fa-key text-2xl text-blue-400"></i>
+                  </div>
+                  <h1 className="text-3xl font-black tracking-tight text-white">Nouveau mot de passe</h1>
+                  <p className="mt-2 text-sm font-medium text-slate-400">
+                    Choisissez un nouveau mot de passe sécurisé.
+                  </p>
+                </div>
+
+                <form onSubmit={handleResetPassword} className="space-y-5" noValidate>
+                  <div className="space-y-2">
+                    <label htmlFor="new-password" className="ml-1 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Nouveau mot de passe
+                    </label>
+                    <div className="relative">
+                      <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                        <i className="fas fa-lock text-sm"></i>
+                      </div>
+                      <input
+                        id="new-password"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        disabled={loading}
+                        placeholder="Min. 6 caractères"
+                        autoComplete="new-password"
+                        className={`${inputClass('new-password')} pr-12`}
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        onFocus={() => setFocusedField('new-password')}
+                        onBlur={() => setFocusedField(null)}
+                      />
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 transition-colors hover:text-blue-500"
+                      >
+                        <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'} text-sm`}></i>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label htmlFor="confirm-password" className="ml-1 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Confirmer le mot de passe
+                    </label>
+                    <div className="relative">
+                      <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                        <i className="fas fa-lock text-sm"></i>
+                      </div>
+                      <input
+                        id="confirm-password"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        disabled={loading}
+                        placeholder="Retapez le mot de passe"
+                        autoComplete="new-password"
+                        className={inputClass('confirm-password')}
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        onFocus={() => setFocusedField('confirm-password')}
+                        onBlur={() => setFocusedField(null)}
+                      />
+                    </div>
+                  </div>
+
+                  {error && (
+                    <div role="alert" className="flex items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 backdrop-blur-sm">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-500/20 text-red-400">
+                        <i className="fas fa-circle-exclamation text-sm"></i>
+                      </div>
+                      <p className="text-sm font-semibold text-red-300">{error}</p>
+                    </div>
+                  )}
+
+                  {success && (
+                    <div role="status" className="flex items-center gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 backdrop-blur-sm">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
+                        <i className="fas fa-check-circle text-sm"></i>
+                      </div>
+                      <p className="text-sm font-semibold text-emerald-300">{success}</p>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="group relative mt-2 w-full overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 py-4 font-black text-white shadow-xl shadow-blue-500/25 transition-all duration-300 hover:shadow-2xl hover:shadow-blue-500/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-blue-500 to-emerald-500 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                    <span className="relative flex items-center justify-center gap-2">
+                      {loading ? (
+                        <><i className="fas fa-circle-notch animate-spin"></i> Réinitialisation...</>
+                      ) : (
+                        <><i className="fas fa-check text-sm"></i> Réinitialiser le mot de passe</>
+                      )}
+                    </span>
+                  </button>
+                </form>
+
+                <div className="mt-6 text-center">
+                  <button
+                    type="button"
+                    onClick={() => { setAuthView('auth'); setError(''); setSuccess(''); }}
+                    className="text-sm font-bold text-blue-400 transition-colors hover:text-blue-300"
+                  >
+                    <i className="fas fa-arrow-left text-xs mr-1"></i> Retour à la connexion
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ===== LOGIN / REGISTER VIEW ===== */}
+            {authView === 'auth' && (
+              <>
             {/* Header */}
             <div className="mb-8">
               <h1 className="text-3xl font-black tracking-tight text-white">
@@ -305,6 +571,17 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                     <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'} text-sm`}></i>
                   </button>
                 </div>
+                {isLogin && (
+                  <div className="mt-1 text-right">
+                    <button
+                      type="button"
+                      onClick={() => { setAuthView('forgot'); setError(''); setSuccess(''); }}
+                      className="text-xs font-bold text-blue-400 transition-colors hover:text-blue-300"
+                    >
+                      Mot de passe oublié ?
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Role Selector (register only) */}
@@ -424,6 +701,8 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 {uiText.switchAction}
               </button>
             </div>
+              </>
+            )}
           </div>
 
           {/* Trust Indicators */}

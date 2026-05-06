@@ -7,7 +7,7 @@ import prescriptionRoutes from './prescriptionRoutes';
 import adminRoutes from './adminRoutes';
 import categoryRoutes from './categoryRoutes';
 import analyticsRoutes from './analyticsRoutes';
-import kafkaRoutes from './kafkaRoutes';
+import ragRoutes from './ragRoutes';
 
 const router = Router();
 
@@ -19,6 +19,6 @@ router.use('/prescriptions', prescriptionRoutes);
 router.use('/admin', adminRoutes);
 router.use('/categories', categoryRoutes);
 router.use('/analytics', analyticsRoutes);
-router.use('/kafka', kafkaRoutes);
+router.use('/rag', ragRoutes);
 
 export default router;

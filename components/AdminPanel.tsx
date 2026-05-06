@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useAppFeedback } from './AppFeedbackProvider';
 import { User, UserRole, Pharmacy } from '../types';
+import { API_BASE } from '../lib/appConfig';
 
 interface AdminPanelProps {
   token: string;
@@ -81,25 +83,7 @@ interface PatientRequest {
   createdAt: string;
 }
 
-interface KafkaEvent {
-  id: string;
-  topic: string;
-  action: string;
-  data: Record<string, any>;
-  result: 'processed' | 'skipped' | 'error';
-  detail?: string;
-  timestamp: string;
-}
-interface KafkaTopicStat { total: number; lastAt: string; errors: number }
-interface KafkaStats {
-  connected: boolean;
-  topics: string[];
-  topicStats: Record<string, KafkaTopicStat>;
-  totalProcessed: number;
-}
-
-const API_BASE = 'http://localhost:5000/api';
-type AdminTab = 'dashboard' | 'users' | 'pharmacies' | 'requests' | 'categories' | 'kafka';
+type AdminTab = 'dashboard' | 'users' | 'pharmacies' | 'requests' | 'categories';
 
 // ─── Role config ──────────────────────────────────────────────────────
 const ROLE_CONFIG = {
@@ -115,15 +99,286 @@ const STATUS_CONFIG: Record<string, { label: string; badge: string; dot: string;
   resolved:    { label: 'Résolu',      badge: 'bg-sky-100 text-sky-700 border-sky-200',            dot: 'bg-sky-500',     icon: 'fa-check-double' },
 };
 
+const safeText = (value: unknown, fallback = ''): string => {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+};
+
+const safeNumber = (value: unknown, fallback = 0): number => (
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+);
+
+const getInitial = (value: unknown): string => safeText(value, '?').charAt(0).toUpperCase();
+
+const normalizeTrendPoints = (value: unknown): TrendPoint[] => (
+  Array.isArray(value)
+    ? value
+        .map((point: any) => ({ _id: safeText(point?._id), count: safeNumber(point?.count) }))
+        .filter((point) => point._id)
+    : []
+);
+
+const normalizeTopPharmacies = (value: unknown): TopPharmacy[] => (
+  Array.isArray(value)
+    ? value.map((item: any) => ({
+        pharmacyName: safeText(item?.pharmacyName, 'Pharmacie inconnue'),
+        requestCount: safeNumber(item?.requestCount),
+      }))
+    : []
+);
+
+const normalizeUsers = (value: unknown): User[] => (
+  Array.isArray(value)
+    ? value.map((user: any, index) => ({
+        id: safeText(user?.id ?? user?._id, `user-${index}`),
+        name: safeText(user?.name, 'Utilisateur inconnu'),
+        email: safeText(user?.email, 'email-inconnu@medcare.local'),
+        role: [UserRole.PATIENT, UserRole.PHARMACIST, UserRole.ADMIN].includes(user?.role) ? user.role : UserRole.PATIENT,
+        isActive: typeof user?.isActive === 'boolean' ? user.isActive : true,
+        profileImageUrl: typeof user?.profileImageUrl === 'string' ? user.profileImageUrl : undefined,
+        pharmacyId: typeof user?.pharmacyId === 'string' ? user.pharmacyId : undefined,
+        location: user?.location,
+      }))
+    : []
+);
+
+const normalizePharmacies = (value: unknown): Pharmacy[] => (
+  Array.isArray(value)
+    ? value.map((pharmacy: any, index) => ({
+        id: safeText(pharmacy?.id ?? pharmacy?._id, `pharmacy-${index}`),
+        name: safeText(pharmacy?.name, 'Pharmacie inconnue'),
+        address: safeText(pharmacy?.address, 'Adresse non renseignée'),
+        phone: safeText(pharmacy?.phone),
+        location: {
+          lat: safeNumber(pharmacy?.location?.lat),
+          lng: safeNumber(pharmacy?.location?.lng),
+        },
+        ownerId: typeof pharmacy?.ownerId === 'string' ? pharmacy.ownerId : undefined,
+        services: Array.isArray(pharmacy?.services)
+          ? pharmacy.services.filter((service: unknown): service is string => typeof service === 'string' && service.trim().length > 0)
+          : [],
+        isActive: typeof pharmacy?.isActive === 'boolean' ? pharmacy.isActive : true,
+      }))
+    : []
+);
+
+const normalizeRequests = (value: unknown): PatientRequest[] => (
+  Array.isArray(value)
+    ? value.map((request: any, index) => ({
+        id: safeText(request?.id ?? request?._id, `request-${index}`),
+        patientId: safeText(request?.patientId),
+        pharmacyId: safeText(request?.pharmacyId),
+        medicationName: safeText(request?.medicationName, 'Médicament inconnu'),
+        note: safeText(request?.note),
+        status: safeText(request?.status, 'pending'),
+        createdAt: safeText(request?.createdAt, new Date(0).toISOString()),
+      }))
+    : []
+);
+
+const normalizeCategories = (value: unknown): MedicationCategory[] => (
+  Array.isArray(value)
+    ? value.map((category: any, index) => ({
+        id: safeText(category?.id ?? category?._id, `category-${index}`),
+        name: safeText(category?.name, 'Catégorie inconnue'),
+        description: safeText(category?.description),
+        isActive: typeof category?.isActive === 'boolean' ? category.isActive : true,
+      }))
+    : []
+);
+
+const normalizeStats = (value: unknown): AdminStats => {
+  const stats: any = value || {};
+  return {
+    users: safeNumber(stats.users),
+    totalUsers: safeNumber(stats.totalUsers),
+    patients: safeNumber(stats.patients),
+    pharmacists: safeNumber(stats.pharmacists),
+    admins: safeNumber(stats.admins),
+    pharmacies: safeNumber(stats.pharmacies),
+    totalPharmacies: safeNumber(stats.totalPharmacies),
+    prescriptions: safeNumber(stats.prescriptions),
+    processedPrescriptions: safeNumber(stats.processedPrescriptions),
+    activeMeds: safeNumber(stats.activeMeds),
+    totalMeds: safeNumber(stats.totalMeds),
+    pendingRequests: safeNumber(stats.pendingRequests),
+    totalRequests: safeNumber(stats.totalRequests),
+    confirmedRequests: safeNumber(stats.confirmedRequests),
+    outOfStockRequests: safeNumber(stats.outOfStockRequests),
+    totalInventoryItems: safeNumber(stats.totalInventoryItems),
+    outOfStockItems: safeNumber(stats.outOfStockItems),
+    totalCategories: safeNumber(stats.totalCategories),
+    userTrend: normalizeTrendPoints(stats.userTrend),
+    requestTrend: normalizeTrendPoints(stats.requestTrend),
+    prescriptionTrend: normalizeTrendPoints(stats.prescriptionTrend),
+    topPharmacies: normalizeTopPharmacies(stats.topPharmacies),
+    inventoryBreakdown: Array.isArray(stats.inventoryBreakdown)
+      ? stats.inventoryBreakdown.map((item: any) => ({ _id: safeText(item?._id, 'unknown'), count: safeNumber(item?.count) }))
+      : [],
+  };
+};
+
+const normalizeAnalytics = (value: unknown): AnalyticsData => {
+  const analytics: any = value || {};
+  return {
+    users: {
+      total: safeNumber(analytics.users?.total),
+      active: safeNumber(analytics.users?.active),
+      patients: safeNumber(analytics.users?.patients),
+      pharmacists: safeNumber(analytics.users?.pharmacists),
+      admins: safeNumber(analytics.users?.admins),
+    },
+    pharmacies: {
+      total: safeNumber(analytics.pharmacies?.total),
+      active: safeNumber(analytics.pharmacies?.active),
+      inactive: safeNumber(analytics.pharmacies?.inactive),
+    },
+    medications: {
+      total: safeNumber(analytics.medications?.total),
+      active: safeNumber(analytics.medications?.active),
+      inactive: safeNumber(analytics.medications?.inactive),
+    },
+    prescriptions: {
+      total: safeNumber(analytics.prescriptions?.total),
+      processed: safeNumber(analytics.prescriptions?.processed),
+      failed: safeNumber(analytics.prescriptions?.failed),
+      pending: safeNumber(analytics.prescriptions?.pending),
+      successRate: safeNumber(analytics.prescriptions?.successRate),
+      avgConfidence: safeNumber(analytics.prescriptions?.avgConfidence),
+      avgProcessingTime: safeNumber(analytics.prescriptions?.avgProcessingTime),
+      totalMedsExtracted: safeNumber(analytics.prescriptions?.totalMedsExtracted),
+    },
+    requests: {
+      total: safeNumber(analytics.requests?.total),
+      pending: safeNumber(analytics.requests?.pending),
+      confirmed: safeNumber(analytics.requests?.confirmed),
+      outOfStock: safeNumber(analytics.requests?.outOfStock),
+      resolved: safeNumber(analytics.requests?.resolved),
+      resolutionRate: safeNumber(analytics.requests?.resolutionRate),
+      avgResolutionHours: safeNumber(analytics.requests?.avgResolutionHours),
+    },
+    inventory: {
+      total: safeNumber(analytics.inventory?.total),
+      available: safeNumber(analytics.inventory?.available),
+      low: safeNumber(analytics.inventory?.low),
+      outOfStock: safeNumber(analytics.inventory?.outOfStock),
+      expired: safeNumber(analytics.inventory?.expired),
+      healthScore: safeNumber(analytics.inventory?.healthScore, 100),
+    },
+    categories: {
+      total: safeNumber(analytics.categories?.total),
+    },
+    growth: {
+      users: normalizeTrendPoints(analytics.growth?.users),
+      requests: normalizeTrendPoints(analytics.growth?.requests),
+      prescriptions: normalizeTrendPoints(analytics.growth?.prescriptions),
+      medications: normalizeTrendPoints(analytics.growth?.medications),
+    },
+    weeklyComparison: {
+      users: {
+        thisWeek: safeNumber(analytics.weeklyComparison?.users?.thisWeek),
+        lastWeek: safeNumber(analytics.weeklyComparison?.users?.lastWeek),
+        change: safeNumber(analytics.weeklyComparison?.users?.change),
+      },
+      requests: {
+        thisWeek: safeNumber(analytics.weeklyComparison?.requests?.thisWeek),
+        lastWeek: safeNumber(analytics.weeklyComparison?.requests?.lastWeek),
+        change: safeNumber(analytics.weeklyComparison?.requests?.change),
+      },
+      prescriptions: {
+        thisWeek: safeNumber(analytics.weeklyComparison?.prescriptions?.thisWeek),
+        lastWeek: safeNumber(analytics.weeklyComparison?.prescriptions?.lastWeek),
+        change: safeNumber(analytics.weeklyComparison?.prescriptions?.change),
+      },
+      medications: {
+        thisWeek: safeNumber(analytics.weeklyComparison?.medications?.thisWeek),
+        lastWeek: safeNumber(analytics.weeklyComparison?.medications?.lastWeek),
+        change: safeNumber(analytics.weeklyComparison?.medications?.change),
+      },
+    },
+    monthlyComparison: {
+      users: {
+        thisMonth: safeNumber(analytics.monthlyComparison?.users?.thisMonth),
+        lastMonth: safeNumber(analytics.monthlyComparison?.users?.lastMonth),
+        change: safeNumber(analytics.monthlyComparison?.users?.change),
+      },
+      requests: {
+        thisMonth: safeNumber(analytics.monthlyComparison?.requests?.thisMonth),
+        lastMonth: safeNumber(analytics.monthlyComparison?.requests?.lastMonth),
+        change: safeNumber(analytics.monthlyComparison?.requests?.change),
+      },
+    },
+    topMedications: Array.isArray(analytics.topMedications)
+      ? analytics.topMedications.map((item: any) => ({
+          name: safeText(item?.name, 'Médicament inconnu'),
+          count: safeNumber(item?.count),
+          activeCount: safeNumber(item?.activeCount),
+        }))
+      : [],
+    topPharmacies: normalizeTopPharmacies(analytics.topPharmacies),
+    adherence: {
+      taken: safeNumber(analytics.adherence?.taken),
+      missed: safeNumber(analytics.adherence?.missed),
+      rate: safeNumber(analytics.adherence?.rate),
+      trend: Array.isArray(analytics.adherence?.trend)
+        ? analytics.adherence.trend
+            .map((item: any) => ({ _id: safeText(item?._id), taken: safeNumber(item?.taken), missed: safeNumber(item?.missed) }))
+            .filter((item: AdherenceTrendPoint) => item._id)
+        : [],
+    },
+    inventoryHealth: Array.isArray(analytics.inventoryHealth)
+      ? analytics.inventoryHealth.map((item: any) => ({
+          pharmacyName: safeText(item?.pharmacyName, 'Pharmacie inconnue'),
+          total: safeNumber(item?.total),
+          outOfStock: safeNumber(item?.outOfStock),
+          low: safeNumber(item?.low),
+          expired: safeNumber(item?.expired),
+          available: safeNumber(item?.available),
+          issueCount: safeNumber(item?.issueCount),
+        }))
+      : [],
+    activityHeatmap: Array.isArray(analytics.activityHeatmap)
+      ? analytics.activityHeatmap.map((item: any) => ({
+          _id: { day: safeNumber(item?._id?.day), hour: safeNumber(item?._id?.hour) },
+          count: safeNumber(item?.count),
+        }))
+      : [],
+    requestFlow: Array.isArray(analytics.requestFlow)
+      ? analytics.requestFlow.map((item: any) => ({
+          _id: { month: safeText(item?._id?.month), status: safeText(item?._id?.status) },
+          count: safeNumber(item?.count),
+        }))
+      : [],
+    frequencyDistribution: Array.isArray(analytics.frequencyDistribution)
+      ? analytics.frequencyDistribution.map((item: any) => ({
+          frequency: safeText(item?.frequency, 'Non spécifié'),
+          count: safeNumber(item?.count),
+        }))
+      : [],
+    recentUsers: Array.isArray(analytics.recentUsers)
+      ? analytics.recentUsers.map((user: any, index) => ({
+          id: safeText(user?.id ?? user?._id, `recent-user-${index}`),
+          name: safeText(user?.name, 'Utilisateur inconnu'),
+          email: safeText(user?.email, 'email-inconnu@medcare.local'),
+          role: safeText(user?.role, UserRole.PATIENT),
+          createdAt: safeText(user?.createdAt, new Date(0).toISOString()),
+          isActive: typeof user?.isActive === 'boolean' ? user.isActive : true,
+        }))
+      : [],
+  };
+};
+
 // ─── Main Component ───────────────────────────────────────────────────
 const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
+  const { confirm } = useAppFeedback();
   const [tab, setTab] = useState<AdminTab>('dashboard');
   const [users, setUsers] = useState<User[]>([]);
   const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
   const [requests, setRequests] = useState<PatientRequest[]>([]);
+  const [categories, setCategories] = useState<MedicationCategory[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
-  const [categories, setCategories] = useState<MedicationCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
@@ -131,8 +386,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all');
   const [pharmacyQuery, setPharmacyQuery] = useState('');
   const [requestFilter, setRequestFilter] = useState<string>('all');
-  const [newCategory, setNewCategory] = useState('');
-  const [newCategoryDesc, setNewCategoryDesc] = useState('');
   const [newPharmacy, setNewPharmacy] = useState({ name: '', address: '', phone: '', lat: 36.8065, lng: 10.1815, services: '' });
   const [assignModal, setAssignModal] = useState<{ userId: string; userName: string } | null>(null);
   const [assignPharmacyId, setAssignPharmacyId] = useState('');
@@ -144,15 +397,10 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   const [resetPwValue, setResetPwValue] = useState('');
   const [editPharmacyModal, setEditPharmacyModal] = useState<Pharmacy | null>(null);
   const [editPharmacyData, setEditPharmacyData] = useState({ name: '', address: '', phone: '', services: '' });
+  const [newCategory, setNewCategory] = useState('');
+  const [newCategoryDesc, setNewCategoryDesc] = useState('');
   const [editCategoryModal, setEditCategoryModal] = useState<MedicationCategory | null>(null);
   const [editCatData, setEditCatData] = useState({ name: '', description: '' });
-
-  // Kafka monitor state
-  const [kafkaEvents, setKafkaEvents] = useState<KafkaEvent[]>([]);
-  const [kafkaStats, setKafkaStats] = useState<KafkaStats | null>(null);
-  const [kafkaTopicFilter, setKafkaTopicFilter] = useState<string>('all');
-  const [kafkaLive, setKafkaLive] = useState(true);
-  const kafkaEndRef = useRef<HTMLDivElement>(null);
 
   const authHeaders = useMemo(() => ({
     'Content-Type': 'application/json',
@@ -168,25 +416,25 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
     setIsLoading(true);
     try {
       const authOnly = { Authorization: `Bearer ${token}` };
-      const [usersRes, statsRes, categoriesRes, pharmaciesRes, requestsRes, analyticsRes] = await Promise.all([
+      const [usersRes, statsRes, pharmaciesRes, requestsRes, analyticsRes, categoriesRes] = await Promise.all([
         fetch(`${API_BASE}/admin/users`, { headers: authOnly }),
         fetch(`${API_BASE}/admin/stats`, { headers: authOnly }),
-        fetch(`${API_BASE}/admin/categories`, { headers: authOnly }),
         fetch(`${API_BASE}/admin/pharmacies`, { headers: authOnly }),
         fetch(`${API_BASE}/admin/requests`, { headers: authOnly }),
         fetch(`${API_BASE}/analytics/admin`, { headers: authOnly }),
+        fetch(`${API_BASE}/admin/categories`, { headers: authOnly }),
       ]);
-      if (usersRes.ok) setUsers(await usersRes.json());
-      if (statsRes.ok) setStats(await statsRes.json());
-      if (categoriesRes.ok) setCategories(await categoriesRes.json());
-      if (analyticsRes.ok) setAnalytics(await analyticsRes.json());
+      if (usersRes.ok) setUsers(normalizeUsers(await usersRes.json()));
+      if (statsRes.ok) setStats(normalizeStats(await statsRes.json()));
+      if (analyticsRes.ok) setAnalytics(normalizeAnalytics(await analyticsRes.json()));
+      if (categoriesRes.ok) setCategories(normalizeCategories(await categoriesRes.json()));
       if (pharmaciesRes.ok) {
-        setPharmacies(await pharmaciesRes.json());
+        setPharmacies(normalizePharmacies(await pharmaciesRes.json()));
       } else {
         const fallback = await fetch(`${API_BASE}/pharmacies`);
-        if (fallback.ok) setPharmacies(await fallback.json());
+        if (fallback.ok) setPharmacies(normalizePharmacies(await fallback.json()));
       }
-      if (requestsRes.ok) setRequests(await requestsRes.json());
+      if (requestsRes.ok) setRequests(normalizeRequests(await requestsRes.json()));
       setLastRefreshAt(new Date());
     } catch (err) {
       console.error('Admin fetch failed', err);
@@ -196,40 +444,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   }, [token]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
-
-  // ─── Kafka fetch & real-time listener ──────────────────────────────
-  const fetchKafka = useCallback(async () => {
-    const authOnly = { Authorization: `Bearer ${token}` };
-    try {
-      const [evRes, stRes] = await Promise.all([
-        fetch(`${API_BASE}/kafka/events?limit=200`, { headers: authOnly }),
-        fetch(`${API_BASE}/kafka/stats`, { headers: authOnly }),
-      ]);
-      if (evRes.ok) { const d = await evRes.json(); setKafkaEvents(d.events ?? []); }
-      if (stRes.ok) setKafkaStats(await stRes.json());
-    } catch { /* ignore */ }
-  }, [token]);
-
-  useEffect(() => {
-    if (tab === 'kafka') fetchKafka();
-  }, [tab, fetchKafka]);
-
-  // Socket.io listener for live Kafka events
-  useEffect(() => {
-    if (tab !== 'kafka' || !kafkaLive) return;
-    let ws: any;
-    try {
-      // @ts-ignore — io is loaded globally by socket.io client
-      ws = (window as any).io?.('http://localhost:5000', { auth: { token }, transports: ['websocket'] });
-    } catch { return; }
-    if (!ws) return;
-    const handler = (ev: KafkaEvent) => {
-      setKafkaEvents(prev => [ev, ...prev].slice(0, 500));
-      setKafkaStats(prev => prev ? { ...prev, totalProcessed: prev.totalProcessed + 1 } : prev);
-    };
-    ws.on('kafka:event', handler);
-    return () => { ws.off('kafka:event', handler); ws.disconnect(); };
-  }, [tab, kafkaLive, token]);
 
   // ─── User actions ─────────────────────────────────────────────────
   const handleCreateUser = async () => {
@@ -276,7 +490,15 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   };
 
   const deleteUser = async (id: string, name: string) => {
-    if (!confirm(`Supprimer définitivement l'utilisateur "${name}" et toutes ses données ?`)) return;
+    const shouldDelete = await confirm({
+      title: 'Supprimer cet utilisateur ?',
+      message: `L'utilisateur "${name}" et ses données associées seront supprimés définitivement.`,
+      tone: 'danger',
+      confirmLabel: 'Supprimer définitivement',
+      cancelLabel: 'Annuler',
+    });
+    if (!shouldDelete) return;
+
     await fetch(`${API_BASE}/admin/users/${id}`, { method: 'DELETE', headers: authHeaders });
     fetchAll();
   };
@@ -335,47 +557,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   };
 
   const deletePharmacy = async (id: string, name: string) => {
-    if (!confirm(`Supprimer la pharmacie "${name}" et tout son inventaire ?`)) return;
-    await fetch(`${API_BASE}/admin/pharmacies/${id}`, { method: 'DELETE', headers: authHeaders });
-    fetchAll();
-  };
-
-  // ─── Category actions ──────────────────────────────────────────────
-  const createCategory = async () => {
-    if (!newCategory.trim()) return;
-    try {
-      const res = await fetch(`${API_BASE}/admin/categories`, {
-        method: 'POST', headers: authHeaders,
-        body: JSON.stringify({ name: newCategory.trim(), description: newCategoryDesc.trim() })
-      });
-      const data = await res.json();
-      if (!res.ok) { flash('error', data.error || 'Échec'); return; }
-      flash('success', 'Catégorie créée !');
-      setNewCategory('');
-      setNewCategoryDesc('');
-      fetchAll();
-    } catch { flash('error', 'Erreur réseau.'); }
-  };
-
-  const handleEditCategory = async () => {
-    if (!editCategoryModal) return;
-    const res = await fetch(`${API_BASE}/admin/categories/${editCategoryModal.id}`, {
-      method: 'PATCH', headers: authHeaders, body: JSON.stringify(editCatData)
+    const shouldDelete = await confirm({
+      title: 'Supprimer cette pharmacie ?',
+      message: `La pharmacie "${name}" et tout son inventaire seront supprimés.`,
+      tone: 'danger',
+      confirmLabel: 'Supprimer',
+      cancelLabel: 'Annuler',
     });
-    if (!res.ok) { flash('error', 'Échec'); return; }
-    flash('success', 'Catégorie modifiée.');
-    setEditCategoryModal(null);
-    fetchAll();
-  };
+    if (!shouldDelete) return;
 
-  const toggleCategory = async (id: string) => {
-    await fetch(`${API_BASE}/admin/categories/${id}/toggle`, { method: 'PATCH', headers: authHeaders });
-    fetchAll();
-  };
-
-  const deleteCategory = async (id: string, name: string) => {
-    if (!confirm(`Supprimer la catégorie "${name}" ?`)) return;
-    await fetch(`${API_BASE}/admin/categories/${id}`, { method: 'DELETE', headers: authHeaders });
+    await fetch(`${API_BASE}/admin/pharmacies/${id}`, { method: 'DELETE', headers: authHeaders });
     fetchAll();
   };
 
@@ -385,13 +576,105 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
     fetchAll();
   };
 
+  // ─── Category actions ──────────────────────────────────────────────
+  const createCategory = async () => {
+    if (!newCategory.trim()) {
+      flash('error', 'Le nom de la catégorie est requis.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/categories`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ name: newCategory, description: newCategoryDesc })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        flash('error', data.error || 'Échec de création');
+        return;
+      }
+
+      flash('success', `Catégorie "${newCategory.trim()}" ajoutée.`);
+      setNewCategory('');
+      setNewCategoryDesc('');
+      fetchAll();
+    } catch {
+      flash('error', 'Erreur réseau.');
+    }
+  };
+
+  const handleEditCategory = async () => {
+    if (!editCategoryModal || !editCatData.name.trim()) {
+      flash('error', 'Le nom de la catégorie est requis.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/categories/${editCategoryModal.id}`, {
+        method: 'PATCH',
+        headers: authHeaders,
+        body: JSON.stringify({
+          name: editCatData.name,
+          description: editCatData.description
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        flash('error', data.error || 'Échec de mise à jour');
+        return;
+      }
+
+      flash('success', 'Catégorie mise à jour.');
+      setEditCategoryModal(null);
+      fetchAll();
+    } catch {
+      flash('error', 'Erreur réseau.');
+    }
+  };
+
+  const toggleCategory = async (id: string) => {
+    const res = await fetch(`${API_BASE}/admin/categories/${id}/toggle`, {
+      method: 'PATCH',
+      headers: authHeaders
+    });
+    if (!res.ok) {
+      flash('error', 'Impossible de changer le statut.');
+      return;
+    }
+    fetchAll();
+  };
+
+  const deleteCategory = async (id: string, name: string) => {
+    const shouldDelete = await confirm({
+      title: 'Supprimer cette catégorie ?',
+      message: `La catégorie "${name}" sera supprimée définitivement.`,
+      tone: 'danger',
+      confirmLabel: 'Supprimer',
+      cancelLabel: 'Annuler',
+    });
+    if (!shouldDelete) return;
+
+    const res = await fetch(`${API_BASE}/admin/categories/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders
+    });
+    if (!res.ok) {
+      flash('error', 'Suppression impossible.');
+      return;
+    }
+
+    flash('success', `Catégorie "${name}" supprimée.`);
+    fetchAll();
+  };
+
   // ─── Filters ──────────────────────────────────────────────────────
   const filteredUsers = useMemo(() => {
     let result = users;
     if (userRoleFilter !== 'all') result = result.filter(u => u.role === userRoleFilter);
     if (userQuery.trim()) {
       const q = userQuery.toLowerCase();
-      result = result.filter(u => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+      result = result.filter(u => safeText(u.name).toLowerCase().includes(q) || safeText(u.email).toLowerCase().includes(q));
     }
     return result;
   }, [users, userQuery, userRoleFilter]);
@@ -399,7 +682,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
   const filteredPharmacies = useMemo(() => {
     if (!pharmacyQuery.trim()) return pharmacies;
     const q = pharmacyQuery.toLowerCase();
-    return pharmacies.filter(p => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q));
+    return pharmacies.filter(p => safeText(p.name).toLowerCase().includes(q) || safeText(p.address).toLowerCase().includes(q));
   }, [pharmacies, pharmacyQuery]);
 
   const filteredRequests = useMemo(() => {
@@ -429,33 +712,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
     { key: 'pharmacies', label: 'Pharmacies',       icon: 'fa-hospital',       color: 'from-emerald-500 to-teal-600',  count: pharmacies.length },
     { key: 'requests',   label: 'Demandes',         icon: 'fa-inbox',          color: 'from-amber-500 to-orange-500',  count: stats?.pendingRequests },
     { key: 'categories', label: 'Catégories',       icon: 'fa-tags',           color: 'from-rose-500 to-pink-600',     count: categories.length },
-    { key: 'kafka',      label: 'Kafka Monitor',    icon: 'fa-bolt',           color: 'from-cyan-500 to-blue-600',     count: kafkaStats?.totalProcessed },
   ];
 
-  const activeTab = TABS.find(t => t.key === tab)!;
   const activeUsers = users.filter(u => u.isActive !== false).length;
   const inactiveUsers = Math.max(users.length - activeUsers, 0);
-  const unassignedPharmacists = users.filter(u => u.role === UserRole.PHARMACIST && !u.pharmacyId).length;
   const inactivePharmacies = pharmacies.filter(p => p.isActive === false).length;
-  const requestPressure = (stats?.totalRequests ?? 0) > 0
-    ? Math.round(((stats?.pendingRequests ?? 0) / (stats?.totalRequests ?? 1)) * 100)
-    : 0;
-  const stockRisk = (stats?.totalInventoryItems ?? 0) > 0
-    ? Math.round(((stats?.outOfStockItems ?? 0) / (stats?.totalInventoryItems ?? 1)) * 100)
-    : 0;
   const resolvedRequests = Math.max(
     (stats?.totalRequests ?? 0) - ((stats?.pendingRequests ?? 0) + (stats?.confirmedRequests ?? 0) + (stats?.outOfStockRequests ?? 0)),
     0
   );
-  const topPharmacyLabel = stats?.topPharmacies?.[0]?.pharmacyName || pharmacies[0]?.name || 'Aucune pharmacie';
   const lastRefreshLabel = lastRefreshAt
     ? lastRefreshAt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
     : 'Jamais';
-
-  const filteredKafkaEvents = useMemo(() => {
-    if (kafkaTopicFilter === 'all') return kafkaEvents;
-    return kafkaEvents.filter(e => e.topic === kafkaTopicFilter);
-  }, [kafkaEvents, kafkaTopicFilter]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -488,7 +756,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               { label: 'Utilisateurs', value: stats?.totalUsers ?? 0, icon: 'fa-users', color: 'text-blue-400', dot: 'bg-blue-500' },
               { label: 'En attente',   value: stats?.pendingRequests ?? 0, icon: 'fa-clock', color: 'text-amber-400', dot: 'bg-amber-500' },
               { label: 'Pharmacies',   value: stats?.totalPharmacies ?? 0, icon: 'fa-hospital', color: 'text-emerald-400', dot: 'bg-emerald-500' },
-              { label: 'Ruptures',     value: stats?.outOfStockItems ?? 0, icon: 'fa-triangle-exclamation', color: 'text-rose-400', dot: 'bg-rose-500' },
+              { label: 'Catégories',   value: stats?.totalCategories ?? categories.filter((c) => c.isActive !== false).length, icon: 'fa-tags', color: 'text-rose-400', dot: 'bg-rose-500' },
             ].map(s => (
               <div key={s.label} className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-2 backdrop-blur-sm">
                 <div className={`w-1.5 h-1.5 rounded-full ${s.dot}`}></div>
@@ -557,85 +825,64 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_0.95fr] gap-5">
-        <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 p-6 shadow-sm">
-          <div className="absolute top-0 right-0 h-40 w-40 rounded-full bg-blue-500/10 blur-3xl"></div>
-          <div className="relative space-y-5">
-            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/80 px-3 py-1 text-[10px] font-black uppercase tracking-[0.24em] text-blue-700">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.45)]"></span>
-                  Ops Radar
-                </div>
-                <h3 className="mt-3 text-xl font-black tracking-tight text-slate-900">Pilotage en temps réel du rôle admin</h3>
-                <p className="mt-1 max-w-2xl text-sm font-medium text-slate-500">
-                  Vue active: <span className="font-black text-slate-800">{activeTab.label}</span>. Priorisez les demandes en attente,
-                  les pharmaciens non rattachés et les risques de stock avant qu'ils ne dégradent l'expérience patient.
-                </p>
-              </div>
-              <div className="min-w-[210px] rounded-2xl border border-slate-200 bg-slate-950 px-4 py-3 text-white shadow-lg shadow-slate-900/10">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Dernière synchro</span>
-                  <button
-                    onClick={fetchAll}
-                    className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white transition hover:bg-white/20"
-                  >
-                    <i className="fas fa-rotate text-[9px]"></i>
-                    Rafraîchir
-                  </button>
-                </div>
-                <div className="mt-3 text-3xl font-black">{lastRefreshLabel}</div>
-                <p className="mt-1 text-xs font-medium text-slate-400">Top pharmacie observée: {topPharmacyLabel}</p>
-              </div>
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.24em] text-blue-600">Administration</p>
+              <h3 className="mt-2 text-xl font-black tracking-tight text-slate-900">Résumé de la plateforme</h3>
+              <p className="mt-1 max-w-2xl text-sm font-medium text-slate-500">
+                Vue simple des éléments importants pour gérer les utilisateurs, les pharmacies, les demandes et les catégories.
+              </p>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[
-                {
-                  label: 'Charge demandes',
-                  value: `${stats?.pendingRequests ?? 0}`,
-                  hint: `${requestPressure}% du flux total reste à traiter`,
-                  icon: 'fa-inbox',
-                  tone: 'from-amber-500 to-orange-500',
-                  panel: 'bg-amber-50 border-amber-100'
-                },
-                {
-                  label: 'Pharmaciens à assigner',
-                  value: `${unassignedPharmacists}`,
-                  hint: `${inactiveUsers} comptes inactifs à surveiller`,
-                  icon: 'fa-user-link',
-                  tone: 'from-violet-500 to-purple-600',
-                  panel: 'bg-violet-50 border-violet-100'
-                },
-                {
-                  label: 'Risque stock',
-                  value: `${stockRisk}%`,
-                  hint: `${stats?.outOfStockItems ?? 0} ruptures sur le réseau`,
-                  icon: 'fa-triangle-exclamation',
-                  tone: 'from-rose-500 to-red-600',
-                  panel: 'bg-rose-50 border-rose-100'
-                }
-              ].map(card => (
-                <div key={card.label} className={`rounded-2xl border p-4 ${card.panel}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">{card.label}</p>
-                      <p className="mt-2 text-3xl font-black text-slate-900">{card.value}</p>
-                      <p className="mt-2 text-xs font-semibold text-slate-500">{card.hint}</p>
-                    </div>
-                    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br ${card.tone} text-white shadow-lg`}>
-                      <i className={`fas ${card.icon}`}></i>
-                    </div>
-                  </div>
-                </div>
-              ))}
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Dernière mise à jour</span>
+                <button
+                  onClick={fetchAll}
+                  className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100"
+                >
+                  <i className="fas fa-rotate text-[9px]"></i>
+                  Actualiser
+                </button>
+              </div>
+              <div className="mt-3 text-3xl font-black text-slate-900">{lastRefreshLabel}</div>
             </div>
           </div>
+
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">Utilisateurs actifs</p>
+                <p className="mt-2 text-3xl font-black text-slate-900">{activeUsers}</p>
+                <p className="mt-2 text-xs font-semibold text-slate-500">{inactiveUsers} comptes inactifs</p>
+            </div>
+            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">Demandes en attente</p>
+              <p className="mt-2 text-3xl font-black text-slate-900">{stats?.pendingRequests ?? 0}</p>
+              <p className="mt-2 text-xs font-semibold text-slate-500">{resolvedRequests} demandes déjà résolues</p>
+            </div>
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">Pharmacies actives</p>
+                <p className="mt-2 text-3xl font-black text-slate-900">{stats?.pharmacies ?? pharmacies.filter(p => p.isActive).length}</p>
+                <p className="mt-2 text-xs font-semibold text-slate-500">{inactivePharmacies} pharmacies inactives</p>
+              </div>
+              <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">Catégories actives</p>
+                    <p className="mt-2 text-3xl font-black text-slate-900">{stats?.totalCategories ?? categories.filter((c) => c.isActive !== false).length}</p>
+                  </div>
+                  <p className="text-xs font-semibold text-slate-500">
+                    {categories.filter((c) => c.isActive === false).length} désactivées, {categories.length} au total
+                  </p>
+                </div>
+              </div>
+            </div>
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Admin Shortcuts</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Raccourcis admin</p>
               <h3 className="mt-2 text-lg font-black text-slate-900">Actions structurantes</h3>
             </div>
             <div className="rounded-2xl bg-slate-100 px-3 py-2 text-right">
@@ -649,7 +896,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               { key: 'users' as AdminTab, icon: 'fa-users-gear', title: 'Orchestrer les comptes', sub: `${activeUsers} actifs, ${inactiveUsers} inactifs`, tone: 'bg-blue-50 text-blue-700 border-blue-100' },
               { key: 'pharmacies' as AdminTab, icon: 'fa-hospital', title: 'Stabiliser le réseau', sub: `${pharmacies.length} pharmacies, ${inactivePharmacies} inactives`, tone: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
               { key: 'requests' as AdminTab, icon: 'fa-wave-square', title: 'Débloquer le flux patient', sub: `${stats?.pendingRequests ?? 0} en attente, ${stats?.confirmedRequests ?? 0} confirmées`, tone: 'bg-amber-50 text-amber-700 border-amber-100' },
-              { key: 'categories' as AdminTab, icon: 'fa-tags', title: 'Structurer le catalogue', sub: `${stats?.totalCategories ?? categories.length} catégories configurées`, tone: 'bg-rose-50 text-rose-700 border-rose-100' }
+              { key: 'categories' as AdminTab, icon: 'fa-tags', title: 'Structurer le catalogue', sub: `${categories.filter((c) => c.isActive !== false).length} actives, ${categories.length} au total`, tone: 'bg-rose-50 text-rose-700 border-rose-100' }
             ].map(shortcut => (
               <button
                 key={shortcut.key}
@@ -690,19 +937,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               icon="fa-capsules" gradient="from-rose-500 to-pink-600" sub={`${analytics.medications?.active ?? 0} actifs`} />
           </div>
 
-          {/* ── Row 2: Score Cards ── */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ScoreCard label="Taux d'adhérence" score={analytics.adherence?.rate ?? 0} unit="%" icon="fa-heart-pulse"
-              color="emerald" detail={`${analytics.adherence?.taken ?? 0} prises · ${analytics.adherence?.missed ?? 0} manquées`} />
-            <ScoreCard label="Résolution demandes" score={analytics.requests?.resolutionRate ?? 0} unit="%" icon="fa-check-double"
-              color="blue" detail={`Moy. ${analytics.requests?.avgResolutionHours ?? 0}h · ${analytics.requests?.resolved ?? 0} résolues`} />
-            <ScoreCard label="Santé inventaire" score={analytics.inventory?.healthScore ?? 100} unit="%" icon="fa-boxes-stacked"
-              color="amber" detail={`${analytics.inventory?.outOfStock ?? 0} ruptures · ${analytics.inventory?.low ?? 0} faible`} />
-            <ScoreCard label="Confiance IA" score={analytics.prescriptions?.avgConfidence ?? 0} unit="%" icon="fa-brain"
-              color="violet" detail={`${analytics.prescriptions?.totalMedsExtracted ?? 0} méd. extraits · ${analytics.prescriptions?.avgProcessingTime ?? 0}ms`} />
-          </div>
-
-          {/* ── Row 3: Growth Trends (30 days) ── */}
+          {/* ── Row 2: Growth Trends (30 days) ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <AreaTrendChart title="Croissance Utilisateurs" subtitle="30 derniers jours" data={analytics.growth?.users || []}
               color="blue" icon="fa-user-plus" comparison={analytics.monthlyComparison?.users} />
@@ -716,7 +951,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               color="emerald" icon="fa-capsules" />
           </div>
 
-          {/* ── Row 4: Donuts + Rankings ── */}
+          {/* ── Row 3: Donuts + Rankings ── */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
             {/* Request Status Donut */}
@@ -771,7 +1006,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               <DonutChart segments={[
                 { label: 'Patients', value: analytics.users?.patients ?? 0, color: '#3b82f6' },
                 { label: 'Pharmaciens', value: analytics.users?.pharmacists ?? 0, color: '#8b5cf6' },
-                { label: 'Admins', value: analytics.users?.admins ?? 0, color: '#f59e0b' },
+                { label: 'Administrateurs', value: analytics.users?.admins ?? 0, color: '#f59e0b' },
               ]} />
             </div>
           </div>
@@ -980,7 +1215,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                   <div key={u.id} className="flex items-center justify-between px-7 py-4 hover:bg-slate-50/60 transition">
                     <div className="flex items-center gap-3">
                       <div className={`w-10 h-10 rounded-2xl bg-gradient-to-br ${rc.color} text-white flex items-center justify-center font-black text-sm shadow-sm`}>
-                        {u.name[0]}
+                        {getInitial(u.name)}
                       </div>
                       <div>
                         <span className="font-black text-slate-900 text-sm">{u.name}</span>
@@ -1011,7 +1246,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               icon="fa-user" gradient="from-cyan-500 to-blue-500" />
             <KpiCard label="Pharmaciens" value={stats?.pharmacists ?? 0}
               icon="fa-user-nurse" gradient="from-violet-500 to-purple-600" />
-            <KpiCard label="Admins" value={stats?.admins ?? 0}
+            <KpiCard label="Administrateurs" value={stats?.admins ?? 0}
               icon="fa-user-shield" gradient="from-amber-500 to-orange-500" />
             <KpiCard label="Pharmacies" value={stats?.totalPharmacies ?? 0} sub={`${stats?.pharmacies ?? 0} actives`}
               icon="fa-hospital" gradient="from-emerald-500 to-teal-600" />
@@ -1135,7 +1370,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                         <td className="px-7 py-5">
                           <div className="flex items-center gap-3">
                             <div className={`w-10 h-10 rounded-2xl bg-gradient-to-br ${rc.color} text-white flex items-center justify-center font-black text-sm shadow-sm shrink-0`}>
-                              {u.name[0]}
+                              {getInitial(u.name)}
                             </div>
                             <div>
                               <div className="font-black text-slate-900 text-sm leading-none">{u.name}</div>
@@ -1319,7 +1554,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                           {owner ? (
                             <div className="flex items-center gap-2">
                               <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center font-black text-xs">
-                                {owner.name[0]}
+                                {getInitial(owner.name)}
                               </div>
                               <span className="text-xs font-bold text-slate-700">{owner.name}</span>
                             </div>
@@ -1331,7 +1566,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                           <div className="flex items-center gap-2">
                             <div className={`w-2 h-2 rounded-full shrink-0 ${p.isActive ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-red-400'}`}></div>
                             <span className={`text-[10px] font-black uppercase tracking-widest ${p.isActive ? 'text-emerald-700' : 'text-red-600'}`}>
-                              {p.isActive ? 'Active' : 'Inactive'}
+                              {p.isActive ? 'Actif' : 'Inactif'}
                             </span>
                           </div>
                         </td>
@@ -1425,7 +1660,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
                       <div className="flex flex-wrap gap-2 mb-3">
                         {patient && (
                           <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-xl px-3 py-1.5">
-                            <div className="w-5 h-5 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center text-[9px] font-black">{patient.name[0]}</div>
+                            <div className="w-5 h-5 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center text-[9px] font-black">{getInitial(patient.name)}</div>
                             <span className="text-[10px] font-bold text-slate-600">{patient.name}</span>
                           </div>
                         )}
@@ -1474,70 +1709,97 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
       {/* ─────────────────── TAB: CATEGORIES ────────────────────── */}
       {tab === 'categories' && (
         <div className="space-y-5">
-          {/* Create form */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="px-7 py-5 border-b border-slate-50 flex items-center gap-3 bg-gradient-to-r from-rose-50 to-pink-50">
               <span className="w-9 h-9 bg-gradient-to-br from-rose-500 to-pink-600 text-white rounded-2xl flex items-center justify-center shadow-sm">
                 <i className="fas fa-tag text-sm"></i>
               </span>
               <div>
-                <h3 className="font-black text-slate-900 text-sm">Nouvelle Catégorie</h3>
+                <h3 className="font-black text-slate-900 text-sm">Nouvelle catégorie</h3>
                 <p className="text-[10px] font-medium text-slate-400">Ajoutez une catégorie de médicaments</p>
               </div>
             </div>
             <div className="p-7 flex flex-col sm:flex-row gap-3">
-              <FormInput icon="fa-tag" placeholder="Nom de la catégorie (ex: Antibiotiques) *" value={newCategory}
-                onChange={setNewCategory} className="flex-1" onEnter={createCategory} />
-              <FormInput icon="fa-align-left" placeholder="Description (optionnel)" value={newCategoryDesc}
-                onChange={setNewCategoryDesc} className="flex-1" />
-              <button onClick={createCategory}
-                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-rose-600 to-pink-600 text-white font-black rounded-2xl hover:from-rose-700 hover:to-pink-700 transition shadow-lg shadow-rose-200 text-sm whitespace-nowrap">
+              <FormInput
+                icon="fa-tag"
+                placeholder="Nom de la catégorie (ex: Antibiotiques) *"
+                value={newCategory}
+                onChange={setNewCategory}
+                className="flex-1"
+                onEnter={createCategory}
+              />
+              <FormInput
+                icon="fa-align-left"
+                placeholder="Description (optionnel)"
+                value={newCategoryDesc}
+                onChange={setNewCategoryDesc}
+                className="flex-1"
+              />
+              <button
+                onClick={createCategory}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-rose-600 to-pink-600 text-white font-black rounded-2xl hover:from-rose-700 hover:to-pink-700 transition shadow-lg shadow-rose-200 text-sm whitespace-nowrap"
+              >
                 <i className="fas fa-plus"></i> Ajouter
               </button>
             </div>
           </div>
 
-          {/* Categories grid */}
           {categories.length === 0 ? (
             <EmptyState icon="fa-tags" title="Aucune catégorie créée" subtitle="Créez votre première catégorie de médicaments ci-dessus" />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {categories.map(c => (
-                <div key={c.id} className={`bg-white rounded-3xl border shadow-sm hover:shadow-lg transition-all group overflow-hidden ${c.isActive === false ? 'border-red-100 opacity-70' : 'border-slate-100 hover:border-rose-100'}`}>
-                  <div className={`h-1 ${c.isActive === false ? 'bg-red-300' : 'bg-gradient-to-r from-rose-500 to-pink-500'}`}></div>
+              {categories.map((category) => (
+                <div
+                  key={category.id}
+                  className={`bg-white rounded-3xl border shadow-sm hover:shadow-lg transition-all group overflow-hidden ${
+                    category.isActive === false ? 'border-red-100 opacity-70' : 'border-slate-100 hover:border-rose-100'
+                  }`}
+                >
+                  <div className={`h-1 ${category.isActive === false ? 'bg-red-300' : 'bg-gradient-to-r from-rose-500 to-pink-500'}`}></div>
                   <div className="p-5">
                     <div className="flex items-start justify-between mb-3">
                       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-lg shadow-sm ${
-                        c.isActive === false ? 'bg-slate-100 text-slate-300' : 'bg-gradient-to-br from-rose-50 to-pink-50 text-rose-500 border border-rose-100'
+                        category.isActive === false ? 'bg-slate-100 text-slate-300' : 'bg-gradient-to-br from-rose-50 to-pink-50 text-rose-500 border border-rose-100'
                       }`}>
                         <i className="fas fa-tag"></i>
                       </div>
                       <span className={`text-[8px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border ${
-                        c.isActive === false ? 'bg-red-50 text-red-500 border-red-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                        category.isActive === false ? 'bg-red-50 text-red-500 border-red-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'
                       }`}>
-                        {c.isActive === false ? 'Inactive' : 'Active'}
+                        {category.isActive === false ? 'Inactif' : 'Actif'}
                       </span>
                     </div>
-                    <h4 className="font-black text-slate-900 text-sm mb-1">{c.name}</h4>
-                    {c.description && <p className="text-xs text-slate-400 leading-relaxed">{c.description}</p>}
 
-                    {/* Actions - appear on hover */}
+                    <h4 className="font-black text-slate-900 text-sm mb-1">{category.name}</h4>
+                    {category.description && (
+                      <p className="text-xs text-slate-400 leading-relaxed">{category.description}</p>
+                    )}
+
                     <div className="flex gap-1.5 mt-4 pt-3 border-t border-slate-50 opacity-0 group-hover:opacity-100 transition">
-                      <button onClick={() => { setEditCategoryModal(c); setEditCatData({ name: c.name, description: c.description || '' }); }}
-                        className="flex-1 py-2 bg-slate-50 hover:bg-blue-600 text-slate-400 hover:text-white rounded-xl transition text-xs font-black flex items-center justify-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          setEditCategoryModal(category);
+                          setEditCatData({ name: category.name, description: category.description || '' });
+                        }}
+                        className="flex-1 py-2 bg-slate-50 hover:bg-blue-600 text-slate-400 hover:text-white rounded-xl transition text-xs font-black flex items-center justify-center gap-1.5"
+                      >
                         <i className="fas fa-pen text-[10px]"></i> Modifier
                       </button>
-                      <button onClick={() => toggleCategory(c.id)}
+                      <button
+                        onClick={() => toggleCategory(category.id)}
                         className={`w-9 h-9 rounded-xl transition text-xs flex items-center justify-center ${
-                          c.isActive === false
+                          category.isActive === false
                             ? 'bg-emerald-50 text-emerald-500 hover:bg-emerald-600 hover:text-white'
                             : 'bg-amber-50 text-amber-500 hover:bg-amber-600 hover:text-white'
                         }`}
-                        title={c.isActive === false ? 'Activer' : 'Désactiver'}>
-                        <i className={`fas ${c.isActive === false ? 'fa-check' : 'fa-ban'} text-[10px]`}></i>
+                        title={category.isActive === false ? 'Activer' : 'Désactiver'}
+                      >
+                        <i className={`fas ${category.isActive === false ? 'fa-check' : 'fa-ban'} text-[10px]`}></i>
                       </button>
-                      <button onClick={() => deleteCategory(c.id, c.name)}
-                        className="w-9 h-9 bg-red-50 text-red-400 hover:bg-red-600 hover:text-white rounded-xl transition text-xs flex items-center justify-center">
+                      <button
+                        onClick={() => deleteCategory(category.id, category.name)}
+                        className="w-9 h-9 bg-red-50 text-red-400 hover:bg-red-600 hover:text-white rounded-xl transition text-xs flex items-center justify-center"
+                      >
                         <i className="fas fa-trash text-[10px]"></i>
                       </button>
                     </div>
@@ -1546,167 +1808,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
               ))}
             </div>
           )}
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════ */}
-      {/* ═══════════════════ KAFKA MONITOR TAB ═══════════════════ */}
-      {/* ══════════════════════════════════════════════════════════ */}
-      {tab === 'kafka' && (
-        <div className="space-y-5 animate-in fade-in duration-300">
-
-          {/* ── Connection banner ─────────────────────────────────── */}
-          <div className={`flex items-center gap-4 px-6 py-4 rounded-2xl border shadow-sm ${
-            kafkaStats?.connected
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-              : 'bg-red-50 border-red-200 text-red-800'
-          }`}>
-            <span className="relative flex h-3 w-3">
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${kafkaStats?.connected ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
-              <span className={`relative inline-flex rounded-full h-3 w-3 ${kafkaStats?.connected ? 'bg-emerald-500' : 'bg-red-500'}`}></span>
-            </span>
-            <span className="text-sm font-black uppercase tracking-wider">{kafkaStats?.connected ? 'Kafka Connected' : 'Kafka Disconnected'}</span>
-            <span className="text-xs opacity-60 font-bold">Broker: localhost:9092</span>
-            <div className="ml-auto flex items-center gap-3">
-              <span className="text-xs font-bold opacity-60">{kafkaStats?.totalProcessed ?? 0} events processed</span>
-              <button onClick={fetchKafka} className="w-8 h-8 bg-white/80 rounded-xl flex items-center justify-center hover:scale-105 transition shadow-sm">
-                <i className="fas fa-arrows-rotate text-xs"></i>
-              </button>
-            </div>
-          </div>
-
-          {/* ── Topic stats cards ─────────────────────────────────── */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {(kafkaStats?.topics ?? []).map(topic => {
-              const s = kafkaStats?.topicStats?.[topic];
-              const topicIcon = topic.includes('patient') ? 'fa-user-injured' : topic.includes('medication') ? 'fa-pills' : 'fa-boxes-stacked';
-              const topicColor = topic.includes('patient') ? 'from-amber-500 to-orange-500' : topic.includes('medication') ? 'from-violet-500 to-purple-600' : 'from-cyan-500 to-blue-600';
-              return (
-                <div key={topic} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-md transition">
-                  <div className={`h-1.5 bg-gradient-to-r ${topicColor}`}></div>
-                  <div className="p-5">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${topicColor} flex items-center justify-center text-white shadow-sm`}>
-                        <i className={`fas ${topicIcon} text-sm`}></i>
-                      </div>
-                      <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border ${
-                        s && s.errors > 0 ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'
-                      }`}>
-                        {s && s.errors > 0 ? `${s.errors} errors` : 'Healthy'}
-                      </span>
-                    </div>
-                    <h4 className="font-black text-slate-900 text-sm mb-0.5 font-mono">{topic}</h4>
-                    <div className="flex items-center gap-4 mt-2">
-                      <div className="text-center">
-                        <div className="text-xl font-black text-slate-900">{s?.total ?? 0}</div>
-                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Messages</div>
-                      </div>
-                      <div className="flex-1 text-right">
-                        <div className="text-[10px] text-slate-400 font-semibold">
-                          {s?.lastAt ? new Date(s.lastAt).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: '2-digit' }) : '—'}
-                        </div>
-                        <div className="text-[9px] text-slate-300 font-medium">Last message</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Controls bar ──────────────────────────────────────── */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl p-1">
-              {['all', ...(kafkaStats?.topics ?? [])].map(t => (
-                <button key={t} onClick={() => setKafkaTopicFilter(t)}
-                  className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition ${
-                    kafkaTopicFilter === t ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
-                  }`}>
-                  {t === 'all' ? 'All Topics' : t.replace(/-/g, ' ')}
-                </button>
-              ))}
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => setKafkaLive(l => !l)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition border ${
-                  kafkaLive
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    : 'bg-slate-50 text-slate-400 border-slate-200'
-                }`}>
-                <span className={`w-2 h-2 rounded-full ${kafkaLive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></span>
-                {kafkaLive ? 'Live' : 'Paused'}
-              </button>
-            </div>
-          </div>
-
-          {/* ── Event Feed ────────────────────────────────────────── */}
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-50 flex items-center gap-3 bg-gradient-to-r from-slate-50 to-cyan-50/30">
-              <span className="w-9 h-9 bg-gradient-to-br from-cyan-500 to-blue-600 text-white rounded-xl flex items-center justify-center shadow-sm">
-                <i className="fas fa-stream text-sm"></i>
-              </span>
-              <div>
-                <h3 className="font-black text-slate-900 text-sm">Event Stream</h3>
-                <p className="text-[10px] font-medium text-slate-400">Real-time Kafka consumer activity</p>
-              </div>
-              <span className="ml-auto text-[10px] font-bold text-slate-400">{filteredKafkaEvents.length} events</span>
-            </div>
-
-            {filteredKafkaEvents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-3">
-                <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center">
-                  <i className="fas fa-satellite-dish text-2xl text-slate-200"></i>
-                </div>
-                <p className="text-sm font-bold text-slate-300">No events yet</p>
-                <p className="text-xs text-slate-300">Events will appear here as Kafka consumers process messages</p>
-              </div>
-            ) : (
-              <div className="max-h-[520px] overflow-y-auto divide-y divide-slate-50">
-                {filteredKafkaEvents.map(ev => {
-                  const resultColor = ev.result === 'processed' ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                    : ev.result === 'error' ? 'bg-red-100 text-red-700 border-red-200'
-                    : 'bg-amber-100 text-amber-700 border-amber-200';
-                  const resultIcon = ev.result === 'processed' ? 'fa-check' : ev.result === 'error' ? 'fa-xmark' : 'fa-forward';
-                  const topicBadge = ev.topic.includes('patient') ? 'bg-amber-50 text-amber-600' : ev.topic.includes('medication') ? 'bg-violet-50 text-violet-600' : 'bg-cyan-50 text-cyan-600';
-
-                  return (
-                    <div key={ev.id} className="px-6 py-3.5 hover:bg-slate-50/50 transition group">
-                      <div className="flex items-center gap-3">
-                        {/* result indicator */}
-                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] border ${resultColor}`}>
-                          <i className={`fas ${resultIcon}`}></i>
-                        </div>
-
-                        {/* topic badge */}
-                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-md ${topicBadge}`}>
-                          {ev.topic.replace(/-/g, ' ')}
-                        </span>
-
-                        {/* action */}
-                        <span className="text-xs font-bold text-slate-800 font-mono">{ev.action}</span>
-
-                        {/* detail */}
-                        <span className="text-xs text-slate-400 truncate max-w-md hidden lg:inline">{ev.detail}</span>
-
-                        {/* timestamp */}
-                        <span className="ml-auto text-[10px] font-mono text-slate-300 whitespace-nowrap">
-                          {new Date(ev.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </span>
-                      </div>
-
-                      {/* expandable data row */}
-                      <div className="mt-1.5 opacity-0 group-hover:opacity-100 transition">
-                        <pre className="text-[10px] text-slate-400 font-mono bg-slate-50 rounded-lg px-3 py-1.5 overflow-x-auto max-w-full">
-                          {JSON.stringify(ev.data, null, 0).slice(0, 250)}
-                        </pre>
-                      </div>
-                    </div>
-                  );
-                })}
-                <div ref={kafkaEndRef}></div>
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -1865,6 +1966,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ token }) => {
           />
         </Modal>
       )}
+
     </div>
   );
 };

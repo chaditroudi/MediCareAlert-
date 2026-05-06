@@ -3,7 +3,7 @@ import { Medication } from '../types';
 
 interface ScheduleViewProps {
   medications: Medication[];
-  onTakeMedication: (id: string) => void;
+  onTakeMedication: (id: string, scheduledTime?: string) => void;
   onViewChange: (view: any) => void;
 }
 
@@ -58,16 +58,9 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ medications, onTakeMedicati
 
         // Check if taken for today only
         const selectedDate = weekDays.find(d => d.dayIndex === selectedDay)?.dateStr || todayStr;
-        const taken = (med.history || []).some(
+        const isTaken = (med.history || []).some(
           h => h.date === selectedDate && h.time === time && h.status === 'taken'
         );
-        // Also check by counting taken today
-        const takenTodayForSchedule = selectedDate === todayStr 
-          ? (med.history || []).filter(h => h.date === todayStr && h.status === 'taken').length
-          : 0;
-
-        const scheduleIndex = (med.schedules || []).indexOf(time);
-        const isTaken = selectedDate === todayStr ? scheduleIndex < takenTodayForSchedule : taken;
 
         timeMap[time] = timeMap[time] || [];
         timeMap[time].push({ med, taken: isTaken });
@@ -200,7 +193,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ medications, onTakeMedicati
             <p className="text-blue-200 font-bold mt-1">Prévue à {nextDose.time}</p>
           </div>
           <button
-            onClick={() => onTakeMedication(nextDose.med.id || (nextDose.med as any)._id)}
+            onClick={() => onTakeMedication(nextDose.med.id || (nextDose.med as any)._id, nextDose.time)}
             className="px-6 py-3 bg-white text-blue-700 font-black text-xs rounded-xl hover:bg-blue-50 transition shadow-md active:scale-95"
           >
             PRENDRE
@@ -284,7 +277,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ medications, onTakeMedicati
                             </div>
                             {isSelectedToday && !taken && med.stockCount > 0 && (
                               <button
-                                onClick={() => onTakeMedication(med.id || (med as any)._id)}
+                                onClick={() => onTakeMedication(med.id || (med as any)._id, entry.time)}
                                 className="px-5 py-3 bg-slate-900 text-white font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-blue-600 transition shadow-md active:scale-95 shrink-0"
                               >
                                 PRENDRE
@@ -346,7 +339,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ medications, onTakeMedicati
                           <span className="px-4 py-1.5 bg-emerald-100 text-emerald-700 text-xs font-black rounded-full">PRIS</span>
                         ) : isSelectedToday && med.stockCount > 0 ? (
                           <button
-                            onClick={() => onTakeMedication(med.id || (med as any)._id)}
+                            onClick={() => onTakeMedication(med.id || (med as any)._id, entry.time)}
                             className="px-4 py-2 bg-slate-900 text-white text-xs font-black rounded-xl hover:bg-blue-600 transition active:scale-95"
                           >
                             PRENDRE

@@ -63,7 +63,7 @@ export const getFullAnalytics = async (_req: Request, res: Response) => {
       PharmacyInventoryModel.countDocuments({ stockStatus: "low" }),
       PharmacyInventoryModel.countDocuments({ stockStatus: "out_of_stock" }),
       PharmacyInventoryModel.countDocuments({ stockStatus: "expired" }),
-      MedicationCategoryModel.countDocuments(),
+      MedicationCategoryModel.countDocuments({ isActive: true }),
     ]);
 
     // 2. Growth trends (30 days)

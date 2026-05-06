@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { PatientRequestModel, PharmacyModel, UserModel } from '../models';
 import { toClient, toId } from '../helpers/utils';
-import { publishPatientRequest } from '../kafka';
 import { emitRequestEvent } from '../socket';
 
 const serializeRequest = async (requestDoc: any) => {
@@ -33,14 +32,6 @@ export const create = async (req: Request, res: Response) => {
       medicationName,
       note: note || ''
     });
-    await publishPatientRequest({
-      patientId: (req as any).user.id,
-      pharmacyId,
-      medicationName,
-      requestId: toId(request._id),
-      action: 'created'
-    });
-
     const serialized = await serializeRequest(request);
     emitRequestEvent('request:created', serialized);
     return res.status(201).json(serialized);
@@ -88,16 +79,6 @@ export const updateStatus = async (req: Request, res: Response) => {
     request.status = status;
     await request.save();
 
-    // kafka :
-    await publishPatientRequest({
-      patientId:toId(request.patientId),
-      pharmacyId:toId(request.pharmacyId),
-      medicationName:request.medicationName,
-      requestId:toId(request._id),
-      action:'status_changed',
-      status
-    });
-    
     const serialized = await serializeRequest(request);
     emitRequestEvent('request:updated', serialized);
     return res.json(serialized);

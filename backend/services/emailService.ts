@@ -6,8 +6,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: Number(process.env.SMTP_PORT) || 587,
+  host: process.env.SMTP_HOST || 'sandbox.smtp.mailtrap.io',
+  port: Number(process.env.SMTP_PORT) || 2525,
   secure: false,
   auth: {
     user: process.env.SMTP_USER || '',
@@ -38,7 +38,7 @@ export interface EmailAttachment {
 
 export const sendReminderEmail = async (
   to: string, patientName: string, medName: string, dosage: string, time: string,
-  imageUrl?: string
+  imageUrl?: string, minutesBefore?: number
 ) => {
   if (!isConfigured()) return;
   const imagePath = resolveImagePath(imageUrl);
@@ -54,19 +54,27 @@ export const sendReminderEmail = async (
     imageHtml = `<div style="text-align:center;margin:12px 0;"><img src="cid:medimage" alt="${medName}" style="max-width:200px;border-radius:12px;" /></div>`;
   }
 
+  const isNow = !minutesBefore || minutesBefore === 0;
+  const subject = isNow
+    ? `💊 C'est l'heure : ${medName} — ${time}`
+    : `⏰ Dans ${minutesBefore} min : ${medName} — ${time}`;
+  const heading = isNow
+    ? 'C\'est l\'heure de prendre votre médicament !'
+    : `Rappel : votre dose est dans ${minutesBefore} minutes`;
+  const urgencyColor = isNow ? '#dc2626' : minutesBefore && minutesBefore <= 5 ? '#f59e0b' : '#2563eb';
+
   try {
     await transporter.sendMail({
       from: FROM,
       to,
-      subject: `💊 Rappel : ${medName} - ${time}`,
+      subject,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #e2e8f0;border-radius:16px;">
-          <h2 style="color:#1e293b;">Rappel de Médicament</h2>
+          <h2 style="color:${urgencyColor};">${heading}</h2>
           <p>Bonjour <strong>${patientName}</strong>,</p>
-          <p>C'est l'heure de prendre votre médicament :</p>
           <div style="background:#f1f5f9;padding:16px;border-radius:12px;margin:16px 0;">
-            <p style="margin:0;font-size:18px;font-weight:bold;color:#2563eb;">${medName}</p>
-            <p style="margin:4px 0 0;color:#64748b;">${dosage} — ${time}</p>
+            <p style="margin:0;font-size:18px;font-weight:bold;color:${urgencyColor};">${medName}</p>
+            <p style="margin:4px 0 0;color:#64748b;">${dosage} — prévu à ${time}</p>
           </div>
           ${imageHtml}
           <p style="color:#94a3b8;font-size:12px;">— MedCareAlert+</p>
@@ -76,6 +84,44 @@ export const sendReminderEmail = async (
     });
   } catch (err) {
     console.error('Email send failed:', err);
+  }
+};
+
+export const sendPasswordResetEmail = async (to: string, patientName: string, resetToken: string) => {
+  if (!isConfigured()) {
+    console.log(`[Email] SMTP not configured. Reset token for ${to}: ${resetToken}`);
+    return;
+  }
+
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}?resetToken=${resetToken}`;
+
+  try {
+    await transporter.sendMail({
+      from: FROM,
+      to,
+      subject: '🔑 Réinitialisation de votre mot de passe — MedCareAlert+',
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #e2e8f0;border-radius:16px;">
+          <h2 style="color:#1e293b;">Réinitialisation du mot de passe</h2>
+          <p>Bonjour <strong>${patientName}</strong>,</p>
+          <p>Vous avez demandé une réinitialisation de votre mot de passe. Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe :</p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${resetUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:14px 32px;border-radius:12px;font-weight:bold;text-decoration:none;font-size:16px;">
+              Réinitialiser mon mot de passe
+            </a>
+          </div>
+          <p style="color:#64748b;font-size:13px;">Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur :</p>
+          <p style="word-break:break-all;color:#2563eb;font-size:12px;">${resetUrl}</p>
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0;">
+            <p style="color:#94a3b8;font-size:12px;">Ce lien expire dans <strong>1 heure</strong>.</p>
+            <p style="color:#94a3b8;font-size:12px;">Si vous n'avez pas demandé cette réinitialisation, ignorez simplement cet e-mail.</p>
+          </div>
+          <p style="color:#94a3b8;font-size:12px;">— MedCareAlert+</p>
+        </div>
+      `,
+    });
+  } catch (err) {
+    console.error('Password reset email failed:', err);
   }
 };
 

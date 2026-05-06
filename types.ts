@@ -11,6 +11,7 @@ export interface User {
   email: string;
   role: UserRole;
   isActive?: boolean;
+  profileImageUrl?: string;
   location?: {
     lat: number;
     lng: number;
@@ -58,6 +59,10 @@ export interface PharmacyInventory {
   id: string;
   pharmacyId: string;
   medicationName: string;
+  quantity?: number;
+  threshold?: number;
+  category?: string;
+  expiryDate?: string;
   stockStatus: 'available' | 'low' | 'out_of_stock' | 'expired';
   lastUpdated: string;
 }

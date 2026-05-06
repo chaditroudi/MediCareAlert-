@@ -1,7 +1,10 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { User, Medication, UserRole, PharmacyInventory } from '../types';
+import { useAppFeedback } from './AppFeedbackProvider';
 import InventoryModal from './InventoryModal';
+import { API_BASE } from '../lib/appConfig';
+import { ui } from '../lib/ui';
 
 interface InventoryManagerProps {
   user: User;
@@ -23,47 +26,62 @@ type SortConfig = {
   direction: 'asc' | 'desc';
 } | null;
 
-const API_BASE = 'http://localhost:5000/api';
-
 const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
+  const { confirm } = useAppFeedback();
   const [showAddModal, setShowAddModal] = useState(false);
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'name', direction: 'asc' });
+  const [errorMessage, setErrorMessage] = useState('');
 
   const fetchInventory = useCallback(async () => {
     setIsLoading(true);
+    setErrorMessage('');
     try {
-      if (user.role === UserRole.PHARMACIST && user.pharmacyId) {
+      if (user.role === UserRole.PHARMACIST) {
+        if (!user.pharmacyId) {
+          setItems([]);
+          setErrorMessage("Votre compte pharmacien n'est associe a aucune pharmacie. Un administrateur doit vous assigner une pharmacie avant d'ajouter du stock.");
+          return;
+        }
+
         const res = await fetch(`${API_BASE}/pharmacies/${user.pharmacyId}/inventory`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        if (!res.ok) {
+          throw new Error(`Impossible de charger l'inventaire de la pharmacie (${res.status})`);
+        }
         const data: PharmacyInventory[] = await res.json();
         setItems(data.map(i => ({
           id: i.id,
           name: i.medicationName,
-          stock: i.stockStatus === 'available' ? 100 : i.stockStatus === 'low' ? 10 : 0,
-          category: 'Pharmacy Stock',
-          threshold: 10,
+          stock: i.quantity ?? (i.stockStatus === 'available' ? 100 : i.stockStatus === 'low' ? 10 : 0),
+          category: i.category || 'Stock pharmacie',
+          expiryDate: i.expiryDate,
+          threshold: i.threshold ?? 10,
           type: 'pharmacy'
         })));
       } else {
         const res = await fetch(`${API_BASE}/medications`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+        if (!res.ok) {
+          throw new Error(`Impossible de charger les médicaments (${res.status})`);
+        }
         const data: Medication[] = await res.json();
         setItems(data.map(m => ({
           id: m.id,
           name: m.name,
           stock: m.stockCount,
-          category: 'Personal',
+          category: 'Personnel',
           expiryDate: m.startDate, // Using startDate as proxy for expiry in this view
           threshold: m.threshold,
           type: 'patient'
         })));
       }
     } catch (err) {
-      console.error("Failed to fetch inventory", err);
+      console.error("Impossible de charger l'inventaire", err);
+      setErrorMessage("Impossible de charger l'inventaire.");
     } finally {
       setIsLoading(false);
     }
@@ -104,19 +122,33 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
           },
           body: JSON.stringify({
             medicationName: item.name,
-            stockStatus: status
+            stockStatus: status,
+            quantity: Math.max(0, newStock),
+            threshold: item.threshold,
+            category: item.category,
+            expiryDate: item.expiryDate
           })
         });
       }
     } catch (err) {
-      console.error("Failed to update stock", err);
+      console.error("Impossible de mettre à jour le stock", err);
     }
   };
 
   const handleAddItem = async (data: any) => {
     try {
-      if (user.role === UserRole.PHARMACIST && user.pharmacyId) {
-        await fetch(`${API_BASE}/pharmacies/${user.pharmacyId}/inventory`, {
+      if (user.role === UserRole.PHARMACIST) {
+        if (!user.pharmacyId) {
+          setErrorMessage("Aucune pharmacie n'est associee a ce compte pharmacien.");
+          return;
+        }
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const isExpired = data.expiryDate && new Date(data.expiryDate) < today;
+        const status = isExpired ? 'expired' : data.stock === 0 ? 'out_of_stock' : data.stock <= data.threshold ? 'low' : 'available';
+
+        const res = await fetch(`${API_BASE}/pharmacies/${user.pharmacyId}/inventory`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -124,11 +156,18 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
           },
           body: JSON.stringify({
             medicationName: data.name,
-            stockStatus: 'available'
+            stockStatus: status,
+            quantity: data.stock,
+            threshold: data.threshold,
+            category: data.category,
+            expiryDate: data.expiryDate
           })
         });
+        if (!res.ok) {
+          throw new Error(`Impossible d'ajouter un article à l'inventaire de la pharmacie (${res.status})`);
+        }
       } else {
-        await fetch(`${API_BASE}/medications`, {
+        const res = await fetch(`${API_BASE}/medications`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -138,20 +177,32 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
             name: data.name,
             stockCount: data.stock,
             threshold: data.threshold,
-            dosage: '1 unit',
-            frequency: '1x daily'
+            dosage: '1 unité',
+            frequency: '1 fois par jour'
           })
         });
+        if (!res.ok) {
+          throw new Error(`Impossible d'ajouter le médicament (${res.status})`);
+        }
       }
       fetchInventory();
       setShowAddModal(false);
     } catch (err) {
-      console.error("Failed to add item", err);
+      console.error("Impossible d'ajouter l'article", err);
+      setErrorMessage("Impossible d'ajouter cet article a l'inventaire.");
     }
   };
 
   const handleDeleteItem = async (id: string, name: string, type: string) => {
-    if (!confirm(`Supprimer "${name}" de l'inventaire ?`)) return;
+    const shouldDelete = await confirm({
+      title: 'Supprimer cet article ?',
+      message: `L'article "${name}" sera retiré de l'inventaire.`,
+      tone: 'danger',
+      confirmLabel: 'Supprimer',
+      cancelLabel: 'Annuler',
+    });
+    if (!shouldDelete) return;
+
     try {
       if (type === 'pharmacy' && user.pharmacyId) {
         await fetch(`${API_BASE}/pharmacies/${user.pharmacyId}/inventory/${id}`, {
@@ -166,7 +217,7 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
       }
       setItems(prev => prev.filter(i => i.id !== id));
     } catch (err) {
-      console.error("Failed to delete item", err);
+      console.error("Impossible de supprimer l'article", err);
     }
   };
 
@@ -181,12 +232,13 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
         },
         body: JSON.stringify({
           medicationName: name,
-          stockStatus: 'out_of_stock'
+          stockStatus: 'out_of_stock',
+          quantity: 0
         })
       });
       setItems(prev => prev.map(i => i.id === id ? { ...i, stock: 0 } : i));
     } catch (err) {
-      console.error("Failed to signal rupture", err);
+      console.error("Impossible de signaler la rupture", err);
     }
   };
 
@@ -225,8 +277,8 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-12 h-12 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+      <div className={ui.loadingWrap}>
+        <div className={ui.loadingSpinner}></div>
       </div>
     );
   }
@@ -249,6 +301,8 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
           <i className="fas fa-plus"></i> AJOUTER
         </button>
       </div>
+
+      {errorMessage && <div className={ui.error}>{errorMessage}</div>}
 
       <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
         <div className="overflow-x-auto">
@@ -337,14 +391,14 @@ const InventoryManager: React.FC<InventoryManagerProps> = ({ user, token }) => {
         <SummaryCard 
           icon="fa-boxes-stacked" 
           value={items.length} 
-          label="Total Articles" 
+          label="Total articles" 
           color="text-blue-600" 
           bg="bg-blue-50" 
         />
         <SummaryCard 
           icon="fa-triangle-exclamation" 
           value={items.filter(i => i.stock <= i.threshold && i.stock > 0).length} 
-          label="Alertes Stock Bas" 
+          label="Alertes stock bas" 
           color="text-amber-600" 
           bg="bg-amber-50" 
         />

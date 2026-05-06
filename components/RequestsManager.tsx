@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { Pharmacy, User, UserRole } from '../types';
-
-const API_BASE = 'http://localhost:5000/api';
-const SOCKET_BASE = API_BASE.replace(/\/api$/, '');
+import { API_BASE, SOCKET_URL } from '../lib/appConfig';
+import { expectOk, getApiErrorMessage, readApiResponse } from '../lib/api';
+import { ui } from '../lib/ui';
 
 interface PatientRequest {
   id: string;
@@ -99,7 +99,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
       if (!res.ok) {
         throw new Error(`Failed to fetch requests (${res.status})`);
       }
-      const data = await res.json();
+      const data = await readApiResponse<any[]>(res);
       const nextRequests = Array.isArray(data) ? data : [];
       setRequests(nextRequests);
       setSelectedRequestId((prev) => prev || nextRequests[0]?.id || '');
@@ -114,7 +114,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
   const fetchPharmacies = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/pharmacies`);
-      const data = await res.json();
+      const data = await readApiResponse<any[]>(res);
       setPharmacies(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to fetch pharmacies', error);
@@ -137,7 +137,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
       if (!res.ok) {
         throw new Error(`Failed to fetch messages (${res.status})`);
       }
-      const data = await res.json();
+      const data = await readApiResponse<any[]>(res);
       setMessages(Array.isArray(data) ? data : []);
       setUnreadCounts((prev) => ({ ...prev, [requestId]: 0 }));
       await fetch(`${API_BASE}/requests/${requestId}/chat/read`, {
@@ -164,7 +164,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
   }, [selectedRequestId]);
 
   useEffect(() => {
-    const socket = io(SOCKET_BASE, {
+    const socket = io(SOCKET_URL, {
       auth: { token },
       transports: ['websocket', 'polling'],
     });
@@ -284,7 +284,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
         throw new Error(`Failed to create request (${res.status})`);
       }
 
-      const created = await res.json();
+      const created = await readApiResponse<PatientRequest>(res);
       upsertRequest(created);
       setSelectedRequestId(created.id);
       setFormData({ pharmacyId: '', medicationName: '', note: '' });
@@ -292,7 +292,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
       setUnreadCounts((prev) => ({ ...prev, [created.id]: 0 }));
     } catch (error) {
       console.error('Failed to create request', error);
-      setRequestError('Impossible d’envoyer la demande.');
+      setRequestError(getApiErrorMessage(error, 'Impossible d’envoyer la demande.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -313,11 +313,11 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
         throw new Error(`Failed to update request (${res.status})`);
       }
 
-      const updated = await res.json();
+      const updated = await readApiResponse<PatientRequest>(res);
       upsertRequest(updated);
     } catch (error) {
       console.error('Failed to update request status', error);
-      setRequestError('Impossible de mettre à jour le statut.');
+      setRequestError(getApiErrorMessage(error, 'Impossible de mettre à jour le statut.'));
     }
   };
 
@@ -348,14 +348,14 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
           throw new Error(`Failed to send message (${res.status})`);
         }
 
-        const created = await res.json();
+        const created = await readApiResponse<ChatMessage>(res);
         setMessages((prev) => (prev.some((message) => message.id === created.id) ? prev : [...prev, created]));
       }
 
       setMessageDraft('');
     } catch (error) {
       console.error('Failed to send message', error);
-      setChatError('Impossible d’envoyer le message.');
+      setChatError(getApiErrorMessage(error, 'Impossible d’envoyer le message.'));
     } finally {
       setIsSendingMessage(false);
     }
@@ -363,8 +363,8 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-12 h-12 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+      <div className={ui.loadingWrap}>
+        <div className={ui.loadingSpinner}></div>
       </div>
     );
   }
@@ -399,11 +399,7 @@ const RequestsManager: React.FC<RequestsManagerProps> = ({ user, token }) => {
         </div>
       </div>
 
-      {requestError && (
-        <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl p-4 text-sm font-semibold">
-          {requestError}
-        </div>
-      )}
+      {requestError && <div className={ui.error}>{requestError}</div>}
 
       {showForm && isPatient && (
         <form onSubmit={handleSubmit} className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 space-y-6 animate-in fade-in duration-300">

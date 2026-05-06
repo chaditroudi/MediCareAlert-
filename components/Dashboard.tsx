@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { useAppFeedback } from './AppFeedbackProvider';
 import { User, Medication, UserRole } from '../types';
 import PrescriptionScanner from './PrescriptionScanner';
 import MedicationModal from './MedicationModal';
-
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE, resolveAssetUrl } from '../lib/appConfig';
 
 interface DashboardProps {
   user: User;
@@ -28,6 +28,38 @@ interface AdminOverviewStats {
   processedPrescriptions: number;
   totalCategories: number;
 }
+
+const getCurrentTimeLabel = (date: Date): string =>
+  date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+
+const timeToMinutes = (value: string): number => {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+const resolveFallbackDoseTime = (med: Medication, scheduledTime?: string): string => {
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+  const handledTimes = new Set(
+    (med.history || [])
+      .filter((entry) => entry.date === today && entry.status === 'taken')
+      .map((entry) => entry.time)
+  );
+
+  if (scheduledTime && med.schedules?.includes(scheduledTime) && !handledTimes.has(scheduledTime)) {
+    return scheduledTime;
+  }
+
+  const pendingSchedules = (med.schedules || []).filter((time) => !handledTimes.has(time));
+  if (pendingSchedules.length === 0) {
+    return getCurrentTimeLabel(now);
+  }
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return [...pendingSchedules].sort((a, b) => {
+    return Math.abs(timeToMinutes(a) - nowMinutes) - Math.abs(timeToMinutes(b) - nowMinutes);
+  })[0];
+};
 
 const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], setMedications, onViewChange }) => {
   const [showScanner, setShowScanner] = useState(false);
@@ -88,16 +120,30 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
     fetchAdminStats();
   }, [token, user.role]);
 
-  const handleTakeMedication = async (id: string) => {
+  const handleTakeMedication = async (id: string, scheduledTime?: string) => {
     try {
       const response = await fetch(`${API_BASE}/medications/${id}/take`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(scheduledTime ? { scheduledTime } : {}),
       });
       
-      if (!response.ok) throw new Error('Erreur lors de la mise à jour');
+      if (!response.ok) {
+        if (response.status === 409) {
+          const duplicatePayload = await response.json();
+          const serverMed = duplicatePayload?.medication;
+          if (serverMed) {
+            const today = new Date().toISOString().split('T')[0];
+            const takenTodayCount = (serverMed.history || []).filter((h: any) => h.date === today && h.status === 'taken').length;
+            setMedications(prev => prev.map(m => (m.id === id || (m as any)._id === id) ? { ...serverMed, takenTodayCount } : m));
+            return;
+          }
+        }
+        throw new Error('Erreur lors de la mise à jour');
+      }
       
       const updatedMed = await response.json();
       const today = new Date().toISOString().split('T')[0];
@@ -109,9 +155,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
       setMedications(prev => prev.map(m => {
         if (m.id === id || (m as any)._id === id) {
           const now = new Date();
+          const resolvedTime = resolveFallbackDoseTime(m, scheduledTime);
           const newHistory = [...(m.history || []), {
             date: now.toISOString().split('T')[0],
-            time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            time: resolvedTime,
             status: 'taken' as const
           }];
           
@@ -281,7 +328,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
   const takenDosesToday = activeMeds.reduce((acc, m) => acc + (m.takenTodayCount || 0), 0);
   const progress = totalDosesToday > 0 ? Math.round((takenDosesToday / totalDosesToday) * 100) : 0;
   
-  const lowStockMeds = activeMeds.filter(m => (m.stockCount || 0) <= (m.threshold || 0));
+  const outOfStockMeds = activeMeds.filter(m => (m.stockCount || 0) === 0);
+  const lowStockMeds = activeMeds.filter(m => (m.stockCount || 0) > 0 && (m.stockCount || 0) <= (m.threshold || 0));
 
   // Next dose calculation
   const nextDose = useMemo(() => {
@@ -330,7 +378,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
   const adminRoleMix = adminStats ? [
     { label: 'Patients', value: adminStats.patients, bar: 'bg-blue-500' },
     { label: 'Pharmaciens', value: adminStats.pharmacists, bar: 'bg-emerald-500' },
-    { label: 'Admins', value: adminStats.admins, bar: 'bg-amber-500' },
+    { label: 'Administrateurs', value: adminStats.admins, bar: 'bg-amber-500' },
   ] : [];
 
   return (
@@ -348,7 +396,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
             <p className="text-blue-200 font-medium">
               {isPatient && (progress === 100 ? 'Toutes vos doses sont prises — excellent !' : `${totalDosesToday - takenDosesToday} dose${totalDosesToday - takenDosesToday !== 1 ? 's' : ''} restante${totalDosesToday - takenDosesToday !== 1 ? 's' : ''} aujourd'hui`)}
               {isPharmacist && 'Gérez votre inventaire et les demandes patients'}
-              {isAdmin && 'Command center administrateur pour piloter la plateforme, les alertes stock et les flux critiques'}
+              {isAdmin && 'Vue générale du projet, des comptes et des demandes en cours'}
             </p>
           </div>
           {nextDose && isPatient && (
@@ -414,11 +462,11 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
               <div>
                 <div className="inline-flex items-center gap-2 px-3 py-2 bg-slate-100 rounded-full text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
                   <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  Admin Command Center
+                  Espace Admin
                 </div>
-                <h2 className="mt-4 text-2xl font-black text-slate-900">Pilotage global de MedCareAlert+</h2>
+                <h2 className="mt-4 text-2xl font-black text-slate-900">Vue générale de la plateforme</h2>
                 <p className="mt-2 text-sm font-medium text-slate-500 max-w-2xl">
-                  Une lecture plus stratégique du réseau pour agir vite sur les demandes, les ruptures stock et la répartition des rôles avant de plonger dans l’administration détaillée.
+                  Consultez rapidement les demandes, les ruptures de stock et la répartition des comptes avant d'ouvrir l'administration détaillée.
                 </p>
               </div>
               <button
@@ -574,7 +622,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {isPatient && (
           <>
-            <QuickAction icon="fa-camera" label="Scan IA" sub="Depuis ordonnance" gradient="from-emerald-500 to-teal-600" shadow="shadow-emerald-200" onClick={() => setShowScanner(true)} />
+            <QuickAction icon="fa-camera" label="Scanner" sub="Depuis ordonnance" gradient="from-emerald-500 to-teal-600" shadow="shadow-emerald-200" onClick={() => setShowScanner(true)} />
             <QuickAction icon="fa-pen-to-square" label="Saisie Manuelle" sub="Ajouter sans scanner" gradient="from-blue-500 to-indigo-600" shadow="shadow-blue-200" onClick={() => setShowAddModal(true)} />
             <QuickAction icon="fa-calendar-check" label="Planning" sub="Voir les horaires" gradient="from-amber-500 to-orange-600" shadow="shadow-amber-200" onClick={() => onViewChange('schedule')} />
             <QuickAction icon="fa-map-location-dot" label="Pharmacies" sub="Près de moi" gradient="from-purple-500 to-fuchsia-600" shadow="shadow-purple-200" onClick={() => onViewChange('map')} />
@@ -584,7 +632,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
           <>
             <QuickAction icon="fa-boxes-stacked" label="Inventaire" sub="Gérer stock" gradient="from-blue-500 to-indigo-600" shadow="shadow-blue-200" onClick={() => onViewChange('inventory')} />
             <QuickAction icon="fa-clipboard-list" label="Demandes" sub="Voir les requêtes" gradient="from-purple-500 to-fuchsia-600" shadow="shadow-purple-200" onClick={() => onViewChange('requests')} />
-            <QuickAction icon="fa-camera" label="Scan IA" sub="Scanner ordonnance" gradient="from-emerald-500 to-teal-600" shadow="shadow-emerald-200" onClick={() => setShowScanner(true)} />
+            <QuickAction icon="fa-camera" label="Scanner" sub="Scanner ordonnance" gradient="from-emerald-500 to-teal-600" shadow="shadow-emerald-200" onClick={() => setShowScanner(true)} />
             <QuickAction icon="fa-map-location-dot" label="Ma Pharmacie" sub="Localisation" gradient="from-teal-500 to-cyan-600" shadow="shadow-teal-200" onClick={() => onViewChange('map')} />
           </>
         )}
@@ -592,7 +640,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
           <>
             <QuickAction
               icon="fa-shield-halved"
-              label="Pilotage"
+              label="Vue Projet"
               sub={`${adminStats?.pendingRequests ?? 0} demandes critiques`}
               gradient="from-rose-500 to-red-600"
               shadow="shadow-rose-200"
@@ -608,7 +656,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
             />
             <QuickAction
               icon="fa-boxes-stacked"
-              label="Réseau Stock"
+              label="Stock"
               sub={`${adminStats?.outOfStockItems ?? 0} lignes à risque`}
               gradient="from-blue-500 to-indigo-600"
               shadow="shadow-blue-200"
@@ -625,6 +673,24 @@ const Dashboard: React.FC<DashboardProps> = ({ user, token, medications = [], se
           </>
         )}
       </div>
+
+      {/* ── Out Of Stock Alert ── */}
+      {outOfStockMeds.length > 0 && isPatient && (
+        <div className="bg-gradient-to-r from-red-600 to-rose-700 border border-red-500 p-5 rounded-[2rem] flex items-center gap-5 shadow-xl shadow-red-200 text-white">
+          <div className="w-14 h-14 bg-white/15 rounded-2xl flex items-center justify-center shrink-0">
+            <i className="fas fa-siren-on text-2xl"></i>
+          </div>
+          <div className="flex-1">
+            <h4 className="text-base font-black leading-none mb-1">Rupture de stock détectée</h4>
+            <p className="text-sm font-bold text-red-100">
+              {outOfStockMeds.map(m => m.name).join(', ')} indisponible{outOfStockMeds.length > 1 ? 's' : ''} maintenant
+            </p>
+          </div>
+          <button onClick={() => onViewChange('map')} className="px-5 py-2.5 bg-white text-red-700 text-xs font-black rounded-xl hover:bg-red-50 transition shadow-md whitespace-nowrap">
+            TROUVER UNE PHARMACIE
+          </button>
+        </div>
+      )}
 
       {/* ── Low Stock Alert ── */}
       {lowStockMeds.length > 0 && isPatient && (
@@ -757,11 +823,18 @@ const QuickAction: React.FC<{
   </button>
 );
 
-const MedicationCard: React.FC<{ med: Medication, onTake: (id: string) => void, onEdit?: (med: Medication) => void, onDelete?: (id: string) => void, isCompleted?: boolean }> = ({ med, onTake, onEdit, onDelete, isCompleted }) => {
+const MedicationCard: React.FC<{ med: Medication, onTake: (id: string, scheduledTime?: string) => void, onEdit?: (med: Medication) => void, onDelete?: (id: string) => void, isCompleted?: boolean }> = ({ med, onTake, onEdit, onDelete, isCompleted }) => {
+  const { confirm } = useAppFeedback();
   const stockCount = med.stockCount || 0;
   const threshold = med.threshold || 5;
   const schedules = med.schedules || [];
-  const takenToday = med.takenTodayCount || 0;
+  const today = new Date().toISOString().split('T')[0];
+  const takenTimesToday = new Set(
+    (med.history || [])
+      .filter(entry => entry.date === today && entry.status === 'taken')
+      .map(entry => entry.time)
+  );
+  const takenToday = schedules.filter(time => takenTimesToday.has(time)).length;
 
   const stockStatus = stockCount === 0 
     ? 'RUPTURE DE STOCK' 
@@ -776,7 +849,7 @@ const MedicationCard: React.FC<{ med: Medication, onTake: (id: string) => void, 
       : 'bg-emerald-500';
 
   const stockPercent = Math.min(100, (stockCount / (threshold * 4 || 1)) * 100);
-  const allTaken = takenToday >= schedules.length;
+  const allTaken = schedules.length > 0 && schedules.every(time => takenTimesToday.has(time));
 
   return (
     <div 
@@ -796,7 +869,7 @@ const MedicationCard: React.FC<{ med: Medication, onTake: (id: string) => void, 
       <div className="flex justify-between items-start">
         {(med as any).imageUrl ? (
           <img
-            src={`http://localhost:5000${(med as any).imageUrl}`}
+            src={resolveAssetUrl((med as any).imageUrl) || ''}
             alt={med.name}
             className="w-16 h-16 rounded-3xl object-cover shadow-lg border border-slate-100"
           />
@@ -822,7 +895,19 @@ const MedicationCard: React.FC<{ med: Medication, onTake: (id: string) => void, 
             )}
             {onDelete && (
               <button 
-                onClick={(e) => { e.stopPropagation(); if (confirm('Supprimer ce médicament ?')) onDelete(med.id || (med as any)._id); }}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const shouldDelete = await confirm({
+                    title: 'Supprimer ce médicament ?',
+                    message: `"${med.name}" sera retiré de votre liste de suivi.`,
+                    tone: 'danger',
+                    confirmLabel: 'Supprimer',
+                    cancelLabel: 'Annuler',
+                  });
+                  if (shouldDelete) {
+                    onDelete(med.id || (med as any)._id);
+                  }
+                }}
                 className="w-9 h-9 bg-red-50 text-red-500 rounded-xl flex items-center justify-center hover:bg-red-600 hover:text-white transition-all text-sm"
                 title="Supprimer"
               >
@@ -870,13 +955,13 @@ const MedicationCard: React.FC<{ med: Medication, onTake: (id: string) => void, 
                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Doses Aujourd'hui</span>
                <span className="text-xs font-black text-slate-800">{takenToday}/{schedules.length}</span>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {schedules.map((time, idx) => (
-                <div key={idx} className={`px-3 py-2 rounded-xl text-xs font-bold border flex items-center gap-2 ${idx < takenToday ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
-                  <i className={`fas ${idx < takenToday ? 'fa-check-circle' : 'fa-clock opacity-40'}`}></i>
-                  {time}
-                </div>
-              ))}
+              <div className="flex items-center gap-2 flex-wrap">
+                {schedules.map((time, idx) => (
+                  <div key={idx} className={`px-3 py-2 rounded-xl text-xs font-bold border flex items-center gap-2 ${takenTimesToday.has(time) ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
+                   <i className={`fas ${takenTimesToday.has(time) ? 'fa-check-circle' : 'fa-clock opacity-40'}`}></i>
+                   {time}
+                 </div>
+                ))}
             </div>
           </div>
 

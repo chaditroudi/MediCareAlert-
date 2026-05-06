@@ -7,14 +7,14 @@ interface InventoryModalProps {
 }
 
 const CATEGORIES = [
-  'Pain Relief',
-  'Antibiotics',
-  'Diabetes',
-  'Supplements',
-  'Cardiovascular',
-  'Respiratory',
-  'Gastrointestinal',
-  'Dermatology'
+  'Antalgiques',
+  'Antibiotiques',
+  'Diabète',
+  'Compléments',
+  'Cardiovasculaire',
+  'Respiratoire',
+  'Gastro-intestinal',
+  'Dermatologie'
 ];
 
 const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
@@ -23,7 +23,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
     defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 1);
     return {
       name: '',
-      category: 'Pain Relief',
+      category: 'Antalgiques',
       stock: 0,
       threshold: 10,
       expiryDate: defaultExpiry.toISOString().split('T')[0]
@@ -42,8 +42,8 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
         <form onSubmit={handleSubmit} className="p-10">
           <div className="flex justify-between items-center mb-10">
             <div>
-              <h2 className="text-3xl font-black text-slate-900">Restock Inventory</h2>
-              <p className="text-slate-500 font-medium">Add new clinical supplies to the database</p>
+              <h2 className="text-3xl font-black text-slate-900">Ajouter à l’inventaire</h2>
+              <p className="text-slate-500 font-medium">Ajoutez un nouveau produit médical à la base</p>
             </div>
             <button 
               type="button"
@@ -56,19 +56,19 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
 
           <div className="space-y-6">
             <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Medicine Designation</label>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Désignation du médicament</label>
               <input 
                 type="text" 
                 required
                 className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700"
-                placeholder="e.g. Augmentin 1g"
+                placeholder="Ex. : Augmentin 1g"
                 value={formData.name}
                 onChange={e => setFormData({...formData, name: e.target.value})}
               />
             </div>
 
             <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Category Classification</label>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Catégorie</label>
               <select 
                 className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700 appearance-none"
                 value={formData.category}
@@ -80,7 +80,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
 
             <div className="grid grid-cols-2 gap-6">
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Initial Quantity</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Quantité initiale</label>
                 <input 
                   type="number" 
                   min="0"
@@ -90,7 +90,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Low Stock Alert</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Seuil d’alerte stock bas</label>
                 <input 
                   type="number" 
                   min="0"
@@ -102,7 +102,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
             </div>
 
             <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Expiration Date</label>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-2">Date d’expiration</label>
               <div className="relative">
                 <i className="fas fa-calendar-alt absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none"></i>
                 <input 
@@ -119,7 +119,7 @@ const InventoryModal: React.FC<InventoryModalProps> = ({ onClose, onSave }) => {
             type="submit"
             className="w-full py-5 bg-blue-600 text-white font-black rounded-[2rem] hover:bg-blue-700 shadow-xl shadow-blue-100 transition mt-10 active:scale-95"
           >
-            ADD TO INVENTORY
+            AJOUTER À L’INVENTAIRE
           </button>
         </form>
       </div>
